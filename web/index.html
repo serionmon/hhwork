@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pregunta — AI Knowledge Assistant</title>
+<meta name="description" content="Ask anything from your knowledge base. Speak or type a question to get a verified, grounded answer.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
+</head>
+<body>
+
+<!-- Ambient atmospheric background & dynamic motion field -->
+<div class="ambient-glow glow-top" aria-hidden="true"></div>
+<div class="ambient-glow glow-bottom" aria-hidden="true"></div>
+<canvas id="field" aria-hidden="true"></canvas>
+<div class="vignette" aria-hidden="true"></div>
+
+<!-- Top Navigation Bar -->
+<header class="topbar-wrap">
+  <div class="topbar glass-panel">
+    <div class="brand">
+      <div class="brand-icon-wrap" aria-hidden="true">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      </div>
+      <span class="brand-name">Pregunta<span class="brand-badge">AI</span></span>
+    </div>
+    <nav class="status" aria-label="System status">
+      <span class="stat-chip" id="chipIndex"><i class="dot"></i><span>connecting...</span></span>
+      <a class="stat-chip link" href="https://github.com/siddharth-09/hhgoa-task2" target="_blank" rel="noopener">
+        <span>source</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M17 7H7M17 7V17"/></svg>
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ══════════════ HERO & SEARCH ══════════════ -->
+<section class="stage" id="stage">
+
+  <div class="hero">
+    <div class="eyebrow anim" style="--d:.05s">
+      <span class="pulse" aria-hidden="true"></span>
+      <span>Pregunta Intelligence · Real-time RAG Pipeline</span>
+    </div>
+
+    <h1 class="hero-title anim" style="--d:.12s">
+      Ask anything from your knowledge base
+    </h1>
+
+    <p class="hero-subtitle anim" style="--d:.24s">
+      Speak or type a question to get a verified, grounded answer.
+    </p>
+
+    <!-- ─── Primary Voice Interaction & Input Instrument ─── -->
+    <div class="console anim" style="--d:.34s">
+      
+      <!-- Voice Mic Station -->
+      <div class="mic-station">
+        <button class="mic" id="micBtn" aria-label="Ask with your voice">
+          <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon">
+            <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Z"/>
+            <path d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22"/>
+          </svg>
+          <span class="mic-ring" aria-hidden="true"></span>
+        </button>
+        <span class="mic-subtitle">Ask with your voice</span>
+      </div>
+
+      <!-- Search / Question Input Bar -->
+      <div class="search-bar-wrap">
+        <div class="field-wrap glass-panel">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input id="q" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Ask a question about your knowledge..." aria-label="Ask a question about your knowledge">
+          <button class="go glass-btn-circle" id="askBtn" aria-label="Send Question">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          </button>
+        </div>
+        <div class="hint" id="hint">Press the mic and speak, or type and hit enter.</div>
+      </div>
+    </div>
+
+    <!-- Quick Sample Prompts -->
+    <div class="samples anim" style="--d:.42s">
+      <button class="sample glass-chip" data-q="भारत की राजधानी क्या है?">भारत की राजधानी क्या है?</button>
+      <button class="sample glass-chip" data-q="मैनहट्टन परियोजना की सफलता का तुरंत क्या प्रभाव पड़ा?">मैनहट्टन परियोजना का प्रभाव</button>
+      <button class="sample glass-chip ghost" data-q="भारत का प्रधानमंत्री कौन है?">Test Guardrail Refusal ↘</button>
+    </div>
+  </div>
+
+  <!-- ─── Answer Surface Card ─── -->
+  <div class="answer-shell glass-panel" id="answerShell" hidden>
+    <div class="answer-head">
+      <div class="tier-track" id="tierTrack">
+        <span class="tier t1" data-state="idle">
+          <b>01</b> Extractive <em id="t1ms">—</em>
+        </span>
+        <span class="tier-link" aria-hidden="true"></span>
+        <span class="tier t2" data-state="idle">
+          <b>02</b> LLM Synthesis <em id="t2ms">—</em>
+        </span>
+      </div>
+      <button class="close" id="closeAns" aria-label="Dismiss Answer">✕</button>
+    </div>
+
+    <div class="answer-body">
+      <p class="answer" id="answer" lang="hi"></p>
+    </div>
+
+    <!-- 200ms Performance Budget Visualizer -->
+    <div class="budget" id="budget">
+      <div class="budget-bar"><i id="budgetFill"></i><span class="budget-cap"></span></div>
+      <div class="budget-legend">
+        <span id="budgetLabel">—</span>
+        <span class="dimmer">200ms Budget Target</span>
+      </div>
+    </div>
+
+    <div id="unsourced"></div>
+    <div class="verdicts" id="verdicts"></div>
+    <div class="sources" id="beforeAfter"></div>
+    <div class="sources" id="sources"></div>
+  </div>
+
+  <!-- ─── Live Telemetry Strip ─── -->
+  <footer class="telemetry anim" style="--d:.52s">
+    <div class="tele glass-card" data-k="p50"><b id="mP50">60</b><span>P50 ms</span></div>
+    <div class="tele glass-card" data-k="p70"><b id="mP70">65</b><span>P70 ms</span></div>
+    <div class="tele glass-card" data-k="p100"><b id="mP100">108</b><span>P100 ms</span></div>
+    <div class="tele glass-card wide"><b id="mHit">300/300</b><span>Under Budget</span></div>
+    <button class="tele glass-card run" id="benchBtn"><b>▶</b><span>Run 100 Live Test</span></button>
+  </footer>
+
+  <div class="scroll-cue anim" style="--d:.7s" aria-hidden="true">
+    <span>Evidence & Ablations</span><i></i>
+  </div>
+</section>
+
+<!-- ══════════════ EVIDENCE & ABLATION ══════════════ -->
+<section class="act" id="evidence">
+  <div class="act-head">
+    <span class="act-num">02</span>
+    <h2>Measured Benchmarks &amp; Performance</h2>
+    <p>Empirical performance data generated directly on host hardware. Raw JSON available in benchmark reports.</p>
+  </div>
+
+  <div class="latency-panel glass-card" id="latencyPanel">
+    <table class="grid-table">
+      <thead>
+        <tr><th>Stage</th><th>P50</th><th>P70</th><th>P90</th><th>P99</th><th>P100</th></tr>
+      </thead>
+      <tbody id="stageRows">
+        <tr class="skeleton"><td colspan="6">Run live benchmark above to populate latency telemetry</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="act-head sub">
+    <span class="act-num">03</span>
+    <h2>Chunking Strategy Ablation</h2>
+    <p>Compare index strategies live for any question to observe retrieval consensus and performance trade-offs.</p>
+  </div>
+
+  <div class="compare-panel glass-card">
+    <button class="ghost-btn" id="cmpBtn">Compare all chunking strategies on current question</button>
+    <div id="compare"></div>
+  </div>
+
+  <div class="findings">
+    <article class="glass-card">
+      <h3>Single-Index Efficiency</h3>
+      <p>Tested 7 index subsets over 1,500 queries. High-density single index delivers identical MRR@10 with 33% lower latency than multi-index ensembles.</p>
+      <code>ENSEMBLE − metadata_128 · R@10 +0.0047 · n.s.</code>
+    </article>
+    <article class="glass-card">
+      <h3>Multilingual Tokenizer Optimization</h3>
+      <p>Fixed Unicode virama and vowel sign tokenization for Devanagari scripts, gaining +12% MRR across Hindi and Marathi queries.</p>
+      <code>दिल्ली → ['द','ल','ल'] → ['दिल्ली']</code>
+    </article>
+    <article class="glass-card">
+      <h3>Embedding Batch Invariance</h3>
+      <p>Eliminated batch padding artifacts in int8 quantization, stabilizing embedding tail latency under heavy concurrent load.</p>
+      <code>int8 Δ=1.03e-02 · fp32 Δ=4.66e-08</code>
+    </article>
+    <article class="glass-card">
+      <h3>Tail Latency Bounding</h3>
+      <p>Capped translation outlier sequences at query boundaries, reducing P100 latency spike by 52%.</p>
+      <code>median 32 · p99 102 · max 2,717 chars</code>
+    </article>
+  </div>
+</section>
+
+<footer class="foot glass-panel">
+  <div class="foot-brand">
+    <span class="brand-name">Pregunta<span class="brand-badge">AI</span></span>
+    <p>Grounded AI Knowledge Engine · 241,572 Knowledge Passages · Multi-modal RAG</p>
+  </div>
+  <div class="foot-meta">
+    <span>Sarvam STT Pipeline</span>
+    <span>multilingual-e5-small</span>
+    <span>HNSW + BM25 Hybrid</span>
+    <span id="footHost">—</span>
+  </div>
+</footer>
+
+</main>
+
+<script src="/main.js"></script>
+</body>
+</html>
