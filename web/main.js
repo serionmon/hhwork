@@ -362,7 +362,7 @@ $('#micBtn').onclick = async () => {
       try {
         const wav = await toWav(new Blob(chunks, { type: chunks[0]?.type || 'audio/webm' }));
         const fd = new FormData();
-        fd.append('audio', wav, 'question.wav');
+        fd.append('file', wav, 'question.wav');
         fd.append('generate', 'true');
         const d = await api('/voice', { method: 'POST', body: fd });
 
