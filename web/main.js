@@ -110,8 +110,9 @@ api('/health').then((h) => {
   SERVING = h.serving || [];
   const chip = $('#chipIndex');
   chip.classList.add('ready');
+  const modeLabel = (h.mode || 'direct').toUpperCase();
   chip.querySelector('span').textContent =
-    `${h.total_chunks.toLocaleString()} Chunks · ${h.serving.join('+')}`;
+    `${h.total_chunks.toLocaleString()} Chunks · Direct Retrieval [${modeLabel}]`;
   $('#footHost').textContent = `${h.embedder_variant} · ${h.index_tag}`;
   if (!h.stt_configured) {
     $('#micBtn').disabled = true;
@@ -172,13 +173,18 @@ function renderAnswer(d, tier) {
   // Verdicts & Grounding Info
   const v = [];
   const src = d.answer_source;
-  if (src === 'refusal')       v.push(`<span class="v bad">Refused · ${esc(d.reason || 'unsafe intent')}</span>`);
-  else if (src === 'greeting') v.push(`<span class="v">Greeting · No retrieval spent</span>`);
-  else if (src === 'abstain')  v.push(`<span class="v warn">Abstained · ${esc(d.reason === 'llm_reported_insufficient' ? 'Model judged context inadequate' : 'Not supported by corpus')}</span>`);
-  else                         v.push(`<span class="v good">Grounded</span>`);
+  const matchPct = d.support ? Math.round(d.support * 100) : null;
+
+  if (d.grounded) {
+    v.push(`<span class="v good">Grounded in your knowledge base${matchPct ? ` · ${matchPct}% match` : ''}</span>`);
+  } else if (src === 'refusal') {
+    v.push(`<span class="v bad">Refused · ${esc(d.reason || 'unsafe intent')}</span>`);
+  } else if (src === 'greeting') {
+    v.push(`<span class="v">Greeting · No retrieval spent</span>`);
+  } else {
+    v.push(`<span class="v warn">No sufficiently relevant information in knowledge base</span>`);
+  }
   
-  if (d.support   != null) v.push(`<span class="v">Support ${d.support.toFixed(3)}</span>`);
-  if (d.grounding != null) v.push(`<span class="v">Grounding ${d.grounding.toFixed(3)}</span>`);
   if (d.citations?.length) v.push(`<span class="v good">Cited [${d.citations.join(', ')}]</span>`);
   if (src === 'generated') {
     v.push(rewritten
@@ -211,13 +217,18 @@ function renderAnswer(d, tier) {
       : '';
   }
 
-  $('#sources').innerHTML = d.sources?.length
-    ? `<details><summary>${d.sources.length} Retrieved Passages ↘</summary>` +
-      d.sources.map((s, i) => `
-        <div class="src">[${i + 1}] ${esc(s.text.slice(0, 320))}
-          <div class="meta">${esc(s.unit_id)} · RRF Score ${s.score}${
-            Object.keys(s.contributors || {}).length ? ' · via ' + esc(Object.keys(s.contributors).join(', ')) : ''
-          }</div>
+  const displayResults = d.results || (d.sources?.map((s) => ({
+    content: s.text,
+    score: s.score,
+    source: s.unit_id,
+    metadata: {}
+  })) || []);
+
+  $('#sources').innerHTML = displayResults.length
+    ? `<details><summary>${displayResults.length} Matching Knowledge Records ↘</summary>` +
+      displayResults.map((s, i) => `
+        <div class="src">[${i + 1}] ${esc((s.content || s.text || '').slice(0, 320))}
+          <div class="meta">Source: ${esc(s.source || s.unit_id)} · Score: ${s.score}</div>
         </div>`).join('') + `</details>`
     : '';
 
@@ -233,35 +244,36 @@ async function ask(question) {
   busy = true;
   pulse(0.9);
   $('#hint').classList.remove('err');
-  $('#hint').textContent = 'Retrieving grounded knowledge…';
+  $('#hint').textContent = 'Searching knowledge base directly…';
 
   try {
-    const fast = await api('/ask', {
+    const res = await api('/ask', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, generate: false }),
+      body: JSON.stringify({ question }),
     });
 
-    const willGenerate = !['refusal', 'greeting'].includes(fast.answer_source);
-    renderAnswer(fast, willGenerate ? 'pending' : 'idle');
-    $('#hint').textContent = `Answered in ${ms(fast.fast_path_ms)}`;
+    if (!res.success && res.error) {
+      $('#hint').classList.add('err');
+      $('#hint').textContent = `Error: ${esc(res.error.message || 'Failed to retrieve')}`;
+      return;
+    }
+
+    renderAnswer(res, 'idle');
+    const pct = res.support ? Math.round(res.support * 100) : 0;
+    $('#hint').textContent = res.grounded
+      ? `Retrieved directly in ${ms(res.fast_path_ms)} (${pct}% match)`
+      : `Searched in ${ms(res.fast_path_ms)} — no sufficient match found`;
     pulse(0.5);
 
-    if (willGenerate) {
+    if (res.mode === 'llm' && !['refusal', 'greeting'].includes(res.answer_source)) {
       try {
         const full = await api('/ask', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question, generate: true }),
         });
         renderAnswer(full, full.answer_source === 'generated' ? 'generated' : 'idle');
-        $('#hint').textContent =
-          full.answer_source === 'generated'
-            ? `Synthesized in ${ms(full.total_ms)} · Fast path stood at ${ms(full.fast_path_ms)}`
-            : full.unsourced_answer
-              ? `Knowledge base unverified — showing model fallback`
-              : `Extractive answer validated — ${esc(full.reason || 'generation unchanged')}`;
       } catch {
         setTier(document.querySelector('.tier.t2'), 'idle', '—');
-        $('#hint').textContent = 'LLM synthesis unavailable — grounded answer stands.';
       }
     }
   } catch (e) {

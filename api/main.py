@@ -143,15 +143,80 @@ def _load_sample_queries(limit: int = 600) -> list[str]:
 app = FastAPI(title="Voice RAG — HH Goa Task 2", version="1.0", lifespan=lifespan)
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc: HTTPException):
+    code = "KNOWLEDGE_BASE_UNAVAILABLE" if exc.status_code == 503 else "HTTP_ERROR"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error": {
+                "code": code,
+                "message": str(exc.detail),
+            }
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred while processing the request."
+            }
+        }
+    )
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
-    generate: bool = True
+    generate: bool | None = None
 
 
 def _answer_payload(r) -> dict:
+    mode = os.getenv("ANSWER_MODE", "direct").lower()
+    threshold = float(os.getenv("RETRIEVAL_THRESHOLD", os.getenv("MIN_GROUNDING_SCORE", "0.45")))
+
+    is_grounded = (
+        r.answered
+        and r.answer_source in ("extractive", "generated")
+        and r.support >= threshold
+    )
+
+    no_match_text = "I couldn't find this information in the knowledge base."
+
+    if r.answer_source in ("refusal", "greeting"):
+        final_answer = r.answer
+    elif is_grounded:
+        final_answer = r.answer
+    else:
+        final_answer = no_match_text
+
+    results = []
+    if is_grounded:
+        for s in r.sources:
+            results.append({
+                "content": s.text,
+                "score": round(s.score, 4),
+                "source": s.unit_id,
+                "metadata": {
+                    "contributors": getattr(s, "contributors", {}),
+                    "route": getattr(r, "route", ""),
+                }
+            })
+
     return {
+        "success": True,
+        "mode": mode,
+        "query": r.question,
         "question": r.question,
-        "answer": r.answer,
+        "answer": final_answer,
+        "results": results,
+        "grounded": is_grounded,
         "decision": r.decision,
         "reason": r.reason,
         "answer_source": r.answer_source,
@@ -184,6 +249,7 @@ def health() -> dict:
         raise HTTPException(503, "still loading")
     return {
         "status": "ok",
+        "mode": os.getenv("ANSWER_MODE", "direct").lower(),
         "serving": STATE["serve_names"],
         "indexes": {n: len(ix) for n, ix in STATE["indexes"].items()},
         "total_chunks": sum(len(ix) for ix in STATE["indexes"].values()),
@@ -200,14 +266,17 @@ def health() -> dict:
 def ask(req: AskRequest) -> dict:
     if not STATE:
         raise HTTPException(503, "still loading")
-    r = STATE["harness"].answer(req.question, generate=req.generate)
+    gen_flag = req.generate
+    if gen_flag is None:
+        gen_flag = (os.getenv("ANSWER_MODE", "direct").lower() == "llm")
+    r = STATE["harness"].answer(req.question, generate=gen_flag)
     return _answer_payload(r)
 
 
 @app.post("/voice")
 async def voice(
     audio: UploadFile = File(...),
-    generate: bool = Form(True),
+    generate: bool | None = Form(None),
 ) -> JSONResponse:
     """Spoken question -> answer. STT is reported separately from the budget.
 
@@ -219,7 +288,16 @@ async def voice(
         raise HTTPException(503, "still loading")
     stt: SarvamSTT = STATE["stt"]
     if not stt.configured:
-        raise HTTPException(503, "SARVAM_API_KEY not set on the server")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": {
+                    "code": "STT_UNCONFIGURED",
+                    "message": "SARVAM_API_KEY not set on the server"
+                }
+            }
+        )
 
     blob = await audio.read()
     t = stt.transcribe(blob, filename=audio.filename or "audio.wav",
@@ -228,15 +306,24 @@ async def voice(
         return JSONResponse(
             status_code=200,
             content={
+                "success": True,
+                "mode": os.getenv("ANSWER_MODE", "direct").lower(),
+                "query": "",
                 "transcript": t.text,
                 "stt_ok": t.ok,
                 "stt_error": t.error or "empty transcript",
                 "stt_ms": t.took_ms,
-                "answer": "",
+                "answer": "I couldn't hear or transcribe your audio clearly.",
+                "results": [],
+                "grounded": False,
             },
         )
 
-    r = STATE["harness"].answer(t.text, generate=generate)
+    gen_flag = generate
+    if gen_flag is None:
+        gen_flag = (os.getenv("ANSWER_MODE", "direct").lower() == "llm")
+
+    r = STATE["harness"].answer(t.text, generate=gen_flag)
     payload = _answer_payload(r)
     payload.update(
         transcript=t.text,

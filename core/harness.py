@@ -72,6 +72,10 @@ MAX_QUERY_CHARS = 512
 MIN_SUPPORT = GUARD_MIN_SUPPORT
 BORDERLINE_SUPPORT = 0.30
 
+ANSWER_MODE = os.getenv("ANSWER_MODE", "direct").lower()
+RETRIEVAL_THRESHOLD = float(os.getenv("RETRIEVAL_THRESHOLD", os.getenv("MIN_GROUNDING_SCORE", "0.45")))
+NO_MATCH_MESSAGE = "I couldn't find this information in the knowledge base."
+
 # When retrieval finds nothing, optionally also show what the model knows on its
 # own -- clearly separated, never merged into the grounded answer.
 #
@@ -144,58 +148,34 @@ class RAGHarness:
         *,
         threads: int = 0,
         top_k: int = 10,
-        # How many retrieved passages the LLM is shown.
-        #
-        # Widening this looked obviously right and measured as worthless. Gold
-        # recall does improve with the window -- the answer sits in the top-4 43%
-        # of the time and in the top-8 58% -- so a wider window should have let
-        # the model answer more often. It did not. A/B on the same 18 queries:
-        #
-        #   passages=4   generated 13/18   generate p50  428ms
-        #   passages=8   generated 13/18   generate p50 1013ms
-        #
-        # Identical answer rate, 2.4x the latency, because prompt size drives
-        # generation time. The extra passages were distractors the model already
-        # knew to ignore, and the queries it declines are declined for reasons a
-        # wider window does not fix.
-        #
-        # Kept at 4 on measurement, not on the recall argument. Override with
-        # CONTEXT_PASSAGES if a future corpus behaves differently -- but re-measure
-        # rather than assuming, because this one did not go the intuitive way.
         context_passages: int = 4,
         retriever: AdaptiveRetriever | None = None,
         english_retriever: AdaptiveRetriever | None = None,
     ):
         self.embedder = embedder or Embedder(EmbedderConfig(threads=threads))
-        # An injected retriever lets several harnesses share one set of loaded
-        # indexes. The API serves one configuration but compares all of them side
-        # by side, and loading each subset separately would hold the same 2GB of
-        # index several times over.
         self.retriever = retriever or AdaptiveRetriever.load(index_root, ensemble)
-        # Optional English-source index. MSMARCO-XI ships the original English
-        # alongside the translation, and only the translation was indexed -- so an
-        # English question could not reach an answer the corpus demonstrably held.
-        # Routing is by script (see is_latin_query): additive, and the Devanagari
-        # path is untouched unless the query is overwhelmingly Latin.
         self.english_retriever = english_retriever
-        self.llm = llm or LLMChain.from_env()
+        if llm is not None:
+            self.llm = llm
+        else:
+            try:
+                self.llm = LLMChain.from_env()
+            except Exception:
+                self.llm = None
         self.top_k = top_k
         self.context_passages = context_passages
 
     def warm(self) -> None:
-        """Touch every hot-path component once.
-
-        Without this the first real query pays ONNX graph init and HNSW page
-        faults, and lands in the benchmark as P100 -- reporting warmup as
-        latency. Called at API startup.
-        """
+        """Touch every hot-path component once."""
         qv = self.embedder.encode_query("warmup")
         res = self.retriever.search(qv, "warmup", k=self.top_k)
         extract_answer("warmup", qv, res.hits, self.embedder)
 
     def _attach_unsourced(self, r: AnswerResult, question: str) -> None:
         """Best-effort model-knowledge answer for a query the corpus cannot serve."""
-        if not ALLOW_UNSOURCED or r.answer_source != "abstain":
+        if os.getenv("ANSWER_MODE", "direct").lower() == "direct":
+            return
+        if not ALLOW_UNSOURCED or r.answer_source != "abstain" or self.llm is None:
             return
         try:
             g = self.llm.generate_unsourced(question)
@@ -204,7 +184,13 @@ class RAGHarness:
         if g.ok and g.sufficient and g.answer:
             r.unsourced_answer = g.answer
 
-    def answer(self, question: str, *, generate: bool = True) -> AnswerResult:
+    def answer(self, question: str, *, generate: bool | None = None) -> AnswerResult:
+        mode = os.getenv("ANSWER_MODE", "direct").lower()
+        if generate is None:
+            generate = (mode == "llm")
+        if mode == "direct" or self.llm is None:
+            generate = False
+
         t_start = time.perf_counter()
         t: dict[str, float] = {}
         r = AnswerResult(question=question)
@@ -289,20 +275,31 @@ class RAGHarness:
         # The extractive span is deliberately NOT served in the borderline band --
         # it did not clear the gate. Only a generated answer that the model calls
         # sufficient *and* that passes verification can rescue the query.
-        borderline = generate and BORDERLINE_SUPPORT <= extracted.support < MIN_SUPPORT
+        threshold = float(os.getenv("RETRIEVAL_THRESHOLD", os.getenv("MIN_GROUNDING_SCORE", "0.45")))
+        borderline = generate and self.llm is not None and BORDERLINE_SUPPORT <= extracted.support < threshold
 
-        if out.blocked and not borderline:
-            r.answer = out.message
-            r.decision = out.decision.value
-            r.reason = out.reason
-            r.answer_source = "abstain"
-            if generate:
+        if (out.blocked or extracted.support < threshold) and not borderline:
+            if verdict.decision in (Decision.REFUSE_UNSAFE, Decision.GREETING):
+                r.answer = verdict.message
+                r.decision = verdict.decision.value
+                r.answer_source = "greeting" if verdict.decision is Decision.GREETING else "refusal"
+            elif out.decision is Decision.REFUSE_UNSAFE:
+                r.answer = out.message
+                r.decision = out.decision.value
+                r.answer_source = "refusal"
+            else:
+                r.answer = NO_MATCH_MESSAGE
+                r.decision = Decision.ABSTAIN_UNGROUNDED.value
+                r.answer_source = "abstain"
+
+            r.reason = out.reason if out.blocked else f"low_support({extracted.support:.4f}<{threshold})"
+            if generate and mode != "direct":
                 self._attach_unsourced(r, question)
             r.timings_ms = t
             r.total_ms = round((time.perf_counter() - t_start) * 1000, 3)
             return r
 
-        if borderline:
+        if borderline and self.llm is not None:
             # Provisional: abstain unless generation rescues it below.
             r.answer = out.message
             r.decision = out.decision.value
@@ -325,7 +322,8 @@ class RAGHarness:
                     r.reason = "rescued_by_llm_from_borderline_support"
                 else:
                     r.reason = f"borderline_and_generation_rejected:{gver.reason}"
-            self._attach_unsourced(r, question)
+            if mode != "direct":
+                self._attach_unsourced(r, question)
             r.timings_ms = t
             r.total_ms = round((time.perf_counter() - t_start) * 1000, 3)
             return r
@@ -336,7 +334,7 @@ class RAGHarness:
         r.answer_source = "extractive"
         r.decision = Decision.ALLOW.value
 
-        if not generate:
+        if not generate or self.llm is None:
             r.timings_ms = t
             r.total_ms = r.fast_path_ms
             return r
