@@ -538,14 +538,19 @@ def health():
     embedder = STATE.get("embedder")
     stt = STATE.get("stt")
     embed_avail = embedder.is_available() if embedder is not None else False
+    serve_names = STATE.get("serve_names", [])
+    serving_chunks = sum(len(indexes[n]) for n in serve_names if n in indexes)
     return {
         "status": "ready" if indexes else "unready",
-        "serving": STATE.get("serve_names", []),
+        "serving": serve_names,
         "n_indexes": len(indexes),
-        "total_chunks": sum(len(i) for i in indexes.values()),
+        "total_chunks": serving_chunks,
         "embedding_runtime": "available" if embed_avail else "unavailable",
         "started_ms": STATE.get("started_ms", 0.0),
         "stt_configured": bool(stt and stt.configured),
+        "mode": os.getenv("ANSWER_MODE", "direct").lower(),
+        "embedder_variant": os.getenv("E5_VARIANT", "multilingual-e5-small"),
+        "index_tag": INDEX_TAG,
     }
 
 
