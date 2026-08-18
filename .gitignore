@@ -18,3 +18,5 @@ data/hf_cache/
 .ruff_cache/
 .pytest_cache/
 bench/results/
+
+SKILL.md
