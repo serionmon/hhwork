@@ -27,8 +27,6 @@ RUN uv sync --no-dev --no-install-project
 COPY ingest/ ingest/
 COPY core/ core/
 COPY api/ api/
-COPY bench/ bench/
-COPY eval/ eval/
 COPY web/ web/
 
 ENV PATH="/app/.venv/bin:$PATH" \
