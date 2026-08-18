@@ -487,6 +487,7 @@ async def voice(file: UploadFile = File(...), generate: bool | None = Form(None)
 
     res = harness.answer(tr.text, generate=gen_flag)
     payload = _answer_payload(res)
+    payload["stt_ok"] = True
     payload["transcript"] = tr.text
     payload["stt_ms"] = tr.took_ms
     payload["stt_language"] = tr.language_code
@@ -535,6 +536,7 @@ def compare(req: AskRequest):
 def health():
     indexes = STATE.get("indexes", {})
     embedder = STATE.get("embedder")
+    stt = STATE.get("stt")
     embed_avail = embedder.is_available() if embedder is not None else False
     return {
         "status": "ready" if indexes else "unready",
@@ -543,6 +545,7 @@ def health():
         "total_chunks": sum(len(i) for i in indexes.values()),
         "embedding_runtime": "available" if embed_avail else "unavailable",
         "started_ms": STATE.get("started_ms", 0.0),
+        "stt_configured": bool(stt and stt.configured),
     }
 
 
