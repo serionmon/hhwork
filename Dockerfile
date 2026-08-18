@@ -31,6 +31,9 @@ COPY web/ web/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     INDEX_PATH=/data/index \
+    E5_VARIANT=int8_arm \
+    ORT_PROVIDERS=CPUExecutionProvider \
+    ORT_THREADS=2 \
     PORT=8000
 
 # /data holds the parquet cache, JSONL corpus and built indexes.

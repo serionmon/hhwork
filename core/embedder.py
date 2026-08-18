@@ -45,30 +45,26 @@ TOKENIZER_REPO = "intfloat/multilingual-e5-small"
 def available_providers() -> list[str]:
     """Execution providers to try, best first. Override with ORT_PROVIDERS.
 
-    CUDA is worth an order of magnitude on the ingest embedding stage, which is
-    ~90% of pipeline runtime. onnxruntime silently ignores a provider that is not
-    installed, so listing CUDA on a CPU-only box is harmless.
+    Defaults to CPUExecutionProvider to ensure container safety and prevent unnecessary
+    GPU device discovery calls on CPU-only environments.
     """
     if env := os.getenv("ORT_PROVIDERS"):
         return [p.strip() for p in env.split(",") if p.strip()]
-    have = set(ort.get_available_providers())
-    order = ["CUDAExecutionProvider", "CoreMLExecutionProvider", "CPUExecutionProvider"]
-    return [p for p in order if p in have] or ["CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def default_variant() -> str:
     """Pick the ONNX build that suits the execution provider.
 
-    int8 is a CPU optimisation: the quantised kernels are tuned for AVX-VNNI or
-    ARM dot-product instructions. On CUDA it is the wrong choice -- GPUs want
-    fp32/fp16, and an int8 graph forces dequantise/requantise work that can end
-    up *slower* than fp32. So GPU gets fp32, CPU gets the arch-matched int8.
+    Defaults to 'int8_arm' (Xenova/multilingual-e5-small model_int8.onnx) which is a generic
+    8-bit quantized ONNX model compatible with all x86 and ARM CPUs without requiring
+    AVX-512 VNNI hardware extensions.
     """
     if v := os.getenv("E5_VARIANT"):
         return v
     if "CUDAExecutionProvider" in available_providers():
         return "fp32"
-    return "int8_arm" if os.uname().machine in ("arm64", "aarch64") else "int8_x86"
+    return "int8_arm"
 
 
 @dataclass(slots=True)
@@ -99,13 +95,35 @@ class Embedder:
 
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        if self.cfg.threads:
+        if self.cfg.threads > 0:
             so.intra_op_num_threads = self.cfg.threads
 
         self.providers = available_providers()
-        self.session = ort.InferenceSession(model_path, so, providers=self.providers)
+        try:
+            self.session = ort.InferenceSession(model_path, so, providers=self.providers)
+        except Exception as err:
+            if variant != "fp32":
+                print(f"Warning: failed to load model variant {variant} ({err}), falling back to fp32")
+                self.variant = "fp32"
+                repo_fb, fname_fb = VARIANTS["fp32"]
+                model_path_fb = hf_hub_download(
+                    repo_fb, fname_fb, cache_dir=str(cache_dir) if cache_dir else None
+                )
+                self.session = ort.InferenceSession(model_path_fb, so, providers=self.providers)
+            else:
+                raise
+
         self.provider = self.session.get_providers()[0]
         self._input_names = {i.name for i in self.session.get_inputs()}
+
+        import sys
+        print("=== ONNX Runtime Startup Diagnostic ===")
+        print(f"  Python version      : {sys.version.split()[0]}")
+        print(f"  ONNX Runtime version: {ort.__version__}")
+        print(f"  Available providers : {ort.get_available_providers()}")
+        print(f"  Selected provider   : {self.provider}")
+        print(f"  Selected variant    : {self.variant}")
+        print("=======================================")
 
         # On GPU the batch should be far larger: the bottleneck moves from
         # compute to kernel-launch overhead, and 64 leaves the device idle.
