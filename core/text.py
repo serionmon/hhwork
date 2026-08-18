@@ -51,6 +51,21 @@ def token_set(text: str, *, min_len: int = MIN_TOKEN_LEN) -> set[str]:
     return set(tokenize(text, min_len=min_len))
 
 
+_STOPWORDS_EN = {
+    "a", "an", "the", "and", "or", "but", "is", "are", "was", "were",
+    "be", "been", "being", "in", "on", "at", "to", "for", "with", "of",
+    "by", "about", "against", "between", "into", "through", "during",
+    "before", "after", "above", "below", "from", "up", "down",
+    "out", "off", "over", "under", "then", "once", "here", "there",
+    "when", "where", "why", "how", "all", "any", "both", "each",
+    "few", "more", "most", "other", "some", "such", "no", "nor",
+    "not", "only", "own", "same", "so", "than", "too", "very",
+    "can", "will", "just", "should", "now", "what", "which", "who", "whom",
+    "this", "that", "these", "those", "it", "its", "as", "do", "does", "did",
+    "have", "has", "had",
+}
+
+
 def overlap(query: str, candidate: str, *, min_len: int = MIN_TOKEN_LEN) -> float:
     """Fraction of the query's tokens present in the candidate.
 
@@ -60,4 +75,11 @@ def overlap(query: str, candidate: str, *, min_len: int = MIN_TOKEN_LEN) -> floa
     q = token_set(query, min_len=min_len)
     if not q:
         return 0.0
-    return len(q & token_set(candidate, min_len=min_len)) / len(q)
+    c_tokens = token_set(candidate, min_len=min_len)
+    common = q & c_tokens
+
+    content_q = {t for t in q if t not in _STOPWORDS_EN}
+    if content_q and not (content_q & c_tokens):
+        return 0.0
+
+    return len(common) / len(q)

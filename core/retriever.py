@@ -169,12 +169,13 @@ class AdaptiveRetriever:
         index_root: Path,
         names: list[str] | None = None,
         weights: dict[str, float] | None = None,
+        load_hnsw: bool = False,
     ) -> AdaptiveRetriever:
         names = names or DEFAULT_ENSEMBLE
         indexes: dict[str, ChunkIndex] = {}
         for n in names:
-            if (index_root / n / "hnsw.bin").exists():
-                indexes[n] = ChunkIndex.load(index_root, n)
+            if (index_root / n / "meta.pkl").exists() or (index_root / n / "hnsw.bin").exists():
+                indexes[n] = ChunkIndex.load(index_root, n, load_hnsw=load_hnsw)
         missing = set(names) - set(indexes)
         if missing:
             print(f"  warning: missing indexes skipped: {sorted(missing)}")

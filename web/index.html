@@ -7,7 +7,7 @@
 <meta name="description" content="Ask anything from your knowledge base. Speak or type a question to get a verified, grounded answer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+Devanagari:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✦</text></svg>">
 </head>
@@ -33,9 +33,9 @@
     </div>
     <nav class="status" aria-label="System status">
       <span class="stat-chip" id="chipIndex"><i class="dot"></i><span>connecting...</span></span>
-      <a class="stat-chip link" href="https://github.com/serionmon/hhwork" target="_blank" rel="noopener">
-        <span>source</span>
-        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M17 7H7M17 7V17"/></svg>
+      <a class="stat-chip link" href="https://github.com/serionmon/hhwork" target="_blank" rel="noopener" aria-label="View Source on GitHub">
+        <span>Source</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M17 7H7M17 7V17"/></svg>
       </a>
     </nav>
   </div>
@@ -49,47 +49,46 @@
   <div class="hero">
     <div class="eyebrow anim" style="--d:.05s">
       <span class="pulse" aria-hidden="true"></span>
-      <span>Pregunta Intelligence · Real-time RAG Pipeline</span>
+      <span>Pregunta Intelligence · Direct RAG Pipeline</span>
     </div>
 
     <h1 class="hero-title anim" style="--d:.12s">
       Ask anything from your knowledge base
     </h1>
 
-    <p class="hero-subtitle anim" style="--d:.24s">
-      Speak or type a question to get a verified, grounded answer.
+    <p class="hero-subtitle anim" style="--d:.22s">
+      Speak or type a question to get a verified, grounded answer retrieved directly from indexed documents.
     </p>
 
-    <!-- ─── Primary Voice Interaction & Input Instrument ─── -->
-    <div class="console anim" style="--d:.34s">
+    <!-- ─── Primary Voice & Text Search Console ─── -->
+    <div class="console anim" style="--d:.32s">
       
-      <!-- Voice Mic Station -->
-      <div class="mic-station">
-        <button class="mic" id="micBtn" aria-label="Ask with your voice">
-          <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon">
-            <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Z"/>
-            <path d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22"/>
-          </svg>
-          <span class="mic-ring" aria-hidden="true"></span>
-        </button>
-        <span class="mic-subtitle">Ask with your voice</span>
-      </div>
-
       <!-- Search / Question Input Bar -->
       <div class="search-bar-wrap">
         <div class="field-wrap glass-panel">
-          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="8"></circle>
             <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
           </svg>
           <input id="q" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="Ask a question about your knowledge..." aria-label="Ask a question about your knowledge">
-          <button class="go glass-btn-circle" id="askBtn" aria-label="Send Question">
-            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="5" y1="12" x2="19" y2="12"></line>
-              <polyline points="12 5 19 12 12 19"></polyline>
-            </svg>
-          </button>
+                 placeholder="Ask anything from your knowledge base..." aria-label="Ask anything from your knowledge base">
+          
+          <div class="actions-group">
+            <button class="mic-btn glass-btn-circle" id="micBtn" aria-label="Ask with microphone voice input" title="Voice Input">
+              <svg viewBox="0 0 24 24" aria-hidden="true" class="mic-icon" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 1 0-7 0v5A3.5 3.5 0 0 0 12 15Z"/>
+                <path d="M5 11.5a7 7 0 0 0 14 0M12 18.5V22"/>
+              </svg>
+              <span class="mic-ring" aria-hidden="true"></span>
+            </button>
+            
+            <button class="go-btn glass-btn-circle" id="askBtn" aria-label="Submit Question" title="Submit Question">
+              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+                <polyline points="12 5 19 12 12 19"></polyline>
+              </svg>
+            </button>
+          </div>
         </div>
         <div class="hint" id="hint">Press the mic and speak, or type and hit enter.</div>
       </div>
@@ -99,6 +98,7 @@
     <div class="samples anim" style="--d:.42s">
       <button class="sample glass-chip" data-q="What is the capital of India?">What is the capital of India?</button>
       <button class="sample glass-chip" data-q="What was the impact of the Manhattan Project?">What was the impact of the Manhattan Project?</button>
+      <button class="sample glass-chip" data-q="What is photosynthesis?">What is photosynthesis?</button>
       <button class="sample glass-chip ghost" data-q="Who is the Prime Minister of India?">Test Guardrail Refusal ↘</button>
     </div>
   </div>
@@ -208,7 +208,7 @@
 <footer class="foot glass-panel">
   <div class="foot-brand">
     <span class="brand-name">Pregunta<span class="brand-badge">AI</span></span>
-    <p>Grounded AI Knowledge Engine · 241,572 Knowledge Passages · Multi-modal RAG</p>
+    <p>Grounded AI Knowledge Engine · Real-time Multilingual RAG</p>
   </div>
   <div class="foot-meta">
     <span>Sarvam STT Pipeline</span>

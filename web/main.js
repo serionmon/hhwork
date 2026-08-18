@@ -185,7 +185,14 @@ function renderAnswer(d, tier) {
     v.push(`<span class="v warn">No sufficiently relevant information in knowledge base</span>`);
   }
   
-  if (d.citations?.length) v.push(`<span class="v good">Cited [${d.citations.join(', ')}]</span>`);
+  if (d.citations?.length) {
+    const citLabels = d.citations.map((c) => {
+      if (typeof c === 'string' || typeof c === 'number') return String(c);
+      if (c && typeof c === 'object') return c.source || c.passage_id || c.unit_id || c.text || JSON.stringify(c);
+      return String(c);
+    });
+    v.push(`<span class="v good">Cited [${citLabels.map(esc).join(', ')}]</span>`);
+  }
   if (src === 'generated') {
     v.push(rewritten
       ? `<span class="v good">LLM Synthesized</span>`
@@ -201,7 +208,7 @@ function renderAnswer(d, tier) {
     un.innerHTML = d.unsourced_answer
       ? `<div class="unsourced">
            <div class="tag-un">⚠ Model Knowledge · Not Corpus Grounded</div>
-           <p lang="hi">${esc(d.unsourced_answer)}</p>
+           <p>${esc(d.unsourced_answer)}</p>
            <div class="caveat">Unverified — no direct citation found in knowledge corpus</div>
          </div>`
       : '';
@@ -450,17 +457,26 @@ $('#cmpBtn').onclick = async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
     });
-    btn.textContent = `Re-run Comparison · ${esc(d.agreement)}`;
+    btn.textContent = 'Re-run Comparison';
+
+    const items = d.configs || (d.strategies ? Object.entries(d.strategies).map(([name, s]) => ({
+      config: name,
+      is_served: SERVING.includes(name),
+      chunks: '—',
+      search_ms: ms(s.ms),
+      extract_ms: '—',
+      support: s.support
+    })) : []);
+
     $('#compare').innerHTML = `
       <table class="grid-table">
-        <thead><tr><th>Strategy</th><th>Chunks</th><th>Search</th><th>Extract</th><th>Support</th></tr></thead>
-        <tbody>${d.configs.map((c) => `
+        <thead><tr><th>Strategy</th><th>Latency</th><th>Support</th><th>Extracted Answer</th></tr></thead>
+        <tbody>${items.map((c) => `
           <tr class="${c.is_served ? 'served' : ''}">
             <td>${esc(c.config)}${c.is_served ? '<span class="tag">Served</span>' : ''}</td>
-            <td>${c.chunks.toLocaleString()}</td>
             <td>${c.search_ms}</td>
-            <td>${c.extract_ms}</td>
             <td>${c.support}</td>
+            <td>${esc((d.strategies?.[c.config]?.extractive_answer || '').slice(0, 120))}</td>
           </tr>`).join('')}
         </tbody>
       </table>`;
@@ -468,3 +484,4 @@ $('#cmpBtn').onclick = async () => {
     btn.textContent = 'Comparison failed — retry';
   }
 };
+

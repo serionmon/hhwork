@@ -44,7 +44,7 @@ from core.guardrails import ABSTAIN_TEXT as ABSTAIN_MESSAGE
 from core.guardrails import MIN_SUPPORT as GUARD_MIN_SUPPORT
 from core.guardrails import Decision, check_input, check_output, strip_greeting_prefix
 from core.llm import GenerationResult, LLMChain, LLMClient
-from core.retriever import AdaptiveRetriever, is_latin_query
+from core.retriever import ENGLISH_INDEX, AdaptiveRetriever, is_latin_query
 
 # Upper bound on the question text, in characters.
 #
@@ -154,7 +154,16 @@ class RAGHarness:
     ):
         self.embedder = embedder or Embedder(EmbedderConfig(threads=threads))
         self.retriever = retriever or AdaptiveRetriever.load(index_root, ensemble)
-        self.english_retriever = english_retriever
+        if english_retriever is not None:
+            self.english_retriever = english_retriever
+        else:
+            if (index_root / ENGLISH_INDEX / "meta.pkl").exists() or (index_root / ENGLISH_INDEX / "hnsw.bin").exists():
+                try:
+                    self.english_retriever = AdaptiveRetriever.load(index_root, [ENGLISH_INDEX])
+                except Exception:
+                    self.english_retriever = None
+            else:
+                self.english_retriever = None
         if llm is not None:
             self.llm = llm
         else:
