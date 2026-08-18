@@ -53,10 +53,113 @@ def _percentiles(values: list[float]) -> dict[str, float]:
     }
 
 
+def _maybe_download_index(index_root: Path) -> None:
+    """Download and atomically install the BM25 index artifact if missing.
+
+    Render Free has no persistent disk, so this runs on every cold start.
+    It's idempotent (skips if .artifact_complete is already present) and
+    safe to call unconditionally.
+    """
+    marker = index_root / ".artifact_complete"
+    if marker.exists():
+        print(f"INDEX_DOWNLOAD: already installed ({marker})", flush=True)
+        return
+
+    url = os.getenv("INDEX_DOWNLOAD_URL", "").strip()
+    expected_sha = os.getenv("INDEX_SHA256", "").strip().lower()
+    if not url:
+        print("INDEX_DOWNLOAD: INDEX_DOWNLOAD_URL not set, skipping", flush=True)
+        return
+    if not expected_sha:
+        print("INDEX_DOWNLOAD: INDEX_SHA256 not set, refusing to download without a checksum", flush=True)
+        return
+
+    import hashlib
+    import shutil
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    index_root.parent.mkdir(parents=True, exist_ok=True)
+    index_root.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    print(f"INDEX_DOWNLOAD: starting download from {url}", flush=True)
+
+    with tempfile.TemporaryDirectory(dir=str(index_root.parent)) as tmp:
+        tmp_path = Path(tmp)
+        archive_path = tmp_path / "artifact.tar.gz"
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "pregunta-backend/1.0"})
+            with urllib.request.urlopen(req, timeout=180) as resp, archive_path.open("wb") as f:
+                shutil.copyfileobj(resp, f, length=1024 * 1024)
+        except Exception as exc:
+            print(f"INDEX_DOWNLOAD ERROR: download failed: {exc}", flush=True)
+            return
+
+        dt = round((time.perf_counter() - t0) * 1000, 1)
+        size_mb = round(archive_path.stat().st_size / (1024 * 1024), 2)
+        print(f"INDEX_DOWNLOAD: downloaded {size_mb}MB in {dt}ms", flush=True)
+
+        sha256 = hashlib.sha256()
+        with archive_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                sha256.update(chunk)
+        actual_sha = sha256.hexdigest()
+        if actual_sha != expected_sha:
+            print(
+                f"INDEX_DOWNLOAD ERROR: SHA-256 mismatch "
+                f"(expected {expected_sha}, got {actual_sha}); aborting",
+                flush=True,
+            )
+            return
+        print("INDEX_DOWNLOAD: SHA-256 verified", flush=True)
+
+        stage_dir = tmp_path / "stage"
+        stage_dir.mkdir()
+        try:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    member_path = (stage_dir / member.name).resolve()
+                    if not str(member_path).startswith(str(stage_dir.resolve())):
+                        raise ValueError(f"unsafe path in archive: {member.name}")
+                tar.extractall(stage_dir)
+        except Exception as exc:
+            print(f"INDEX_DOWNLOAD ERROR: extraction failed: {exc}", flush=True)
+            return
+
+        extracted_dirs = [p for p in stage_dir.iterdir() if p.is_dir()]
+        if not extracted_dirs:
+            print("INDEX_DOWNLOAD ERROR: archive contained no strategy directory", flush=True)
+            return
+
+        installed_any = False
+        for strategy_dir in extracted_dirs:
+            if not (strategy_dir / "meta.pkl").exists():
+                print(f"INDEX_DOWNLOAD ERROR: {strategy_dir.name} missing meta.pkl, skipping", flush=True)
+                continue
+            dest = index_root / strategy_dir.name
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.move(str(strategy_dir), str(dest))
+            print(f"INDEX_DOWNLOAD: installed {strategy_dir.name} -> {dest}", flush=True)
+            installed_any = True
+
+        if not installed_any:
+            print("INDEX_DOWNLOAD ERROR: nothing valid installed, not writing marker", flush=True)
+            return
+
+        marker.write_text("ok\n")
+        total_dt = round((time.perf_counter() - t0) * 1000, 1)
+        print(f"INDEX_DOWNLOAD: complete in {total_dt}ms, marker written", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t0 = time.perf_counter()
     print("LIFESPAN: START", flush=True)
+
+    _maybe_download_index(INDEX_ROOT)
 
     enable_dense = os.getenv("ENABLE_DENSE_RETRIEVAL", "false").lower() == "true"
     embedder = None
