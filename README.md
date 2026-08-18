@@ -1,314 +1,817 @@
-# pucho.me — Voice RAG for Hindi & Marathi
+# Pregunta — Multilingual Voice RAG
 
-**पूछो** — *"ask."* Speak a question in Hindi or Marathi; get a grounded, cited answer
-from a 241,572-chunk index in under 200ms.
+A voice-enabled, multilingual retrieval-augmented generation (RAG) system over
+the [MSMARCO-XI](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI) parallel
+corpus (Hindi + Marathi). Ask questions by voice or by text and receive grounded,
+extractive answers backed by real retrieved passages.
 
-Built for **HH Goa 2026 Shortlisting Task 2**.
-
-🔗 **Live:** [https://pucho.me](https://pucho.me) · 💻 **Repo:** [siddharth-09/hhgoa-task2](https://github.com/siddharth-09/hhgoa-task2)
+**Live demo:** https://pregunta-backend.onrender.com
 
 ---
 
-## Headline numbers
+## Features
 
-Measured on the serving box (AWS `m7i-flex.large`, 2 vCPU, Docker), 300 real corpus
-queries, one at a time, no batching:
-
-| Metric | Value | Budget |
-|---|---:|---|
-| **P50** | **64ms** | 200ms |
-| **P70** | **69ms** | 200ms |
-| **P100** | **115ms** | 200ms |
-| Queries within budget | **300 / 300** | — |
-
-The measured window is **transcript → final output**, matching the task's wording
-("chunking + vector DB retrieval + everything through to final output"). Speech-to-text
-and LLM generation are reported separately, below.
-
-Reproduce it yourself against the live deployment:
-
-```bash
-curl -s "https://pucho.me/benchmark?n=100"
-```
+- **Text and voice question answering** — type a question or speak it; the same
+  retrieval pipeline handles both.
+- **Multilingual corpus** — 203,757 indexed chunks from Hindi (`hin_Deva`) and
+  Marathi (`mar_Deva`) passages drawn from MSMARCO-XI.
+- **English language routing** — Latin-script (English) queries are automatically
+  routed to a separate English BM25 index (`english_256`, 98,812 passages), so
+  English questions reach English text.
+- **Hybrid retrieval** — BM25 sparse retrieval (always on) combined with HNSW
+  dense retrieval via `multilingual-e5-small` (optional, off by default in
+  production to stay within Render Free RAM limits).
+- **Extractive answering** — the fast path picks the best-supported sentence span
+  from retrieved chunks with no LLM call; P50 latency is ~30 ms on aarch64.
+- **Optional LLM rewrite** — when `ANSWER_MODE=llm` and an LLM key is configured,
+  the extractive answer is rewritten and verified for grounding before being served.
+- **Dual guardrails** — an intent check before retrieval (unsafe input) and a
+  grounding check after extraction (unsupported answer).
+- **Sarvam STT** — speech-to-text via the Sarvam `saaras:v3` model; supports
+  Hindi, Marathi, and English-Indian speech, up to 30 seconds of audio.
+- **Live benchmark UI** — a browser-side telemetry strip runs 100 live queries
+  and displays P50/P70/P100 latency when the `/benchmark` API endpoint is
+  available (see [Known Limitations](#known-limitations)).
+- **Ablation panel** — the UI can compare all three chunking strategies
+  (`fixed_256`, `semantic_128`, `metadata_128`) on the current question via
+  `POST /compare`.
 
 ---
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    A["🎤 Voice input"] --> B["Sarvam Saaras v3<br/>STT · 500-1300ms"]
-    A2["⌨️ Typed question"] --> G1
-    B -->|transcript| G1
-
-    subgraph BUDGET["⏱️ 200ms BUDGET — measured window · P50 64ms"]
-        G1["🛡️ Input guardrail<br/>intent check · 0.01ms"]
-        G1 -->|unsafe| REFUSE["❌ Refuse"]
-        G1 -->|allowed| CAP["Cap query at 512 chars"]
-        CAP --> EMB["🔢 Embed query<br/>e5-small int8 · 1.7ms"]
-        EMB --> DENSE["Dense — HNSW<br/>cosine, 384-dim"]
-        EMB --> SPARSE["Sparse — BM25<br/>script-aware tokens"]
-        DENSE --> RRF["RRF fusion<br/>by rank, not score · 2.3ms"]
-        SPARSE --> RRF
-        RRF --> EXT["✂️ Extractive answer<br/>best-supported span · 26ms"]
-        EXT --> G2["🛡️ Grounding gate"]
-        G2 -->|"support below 0.45"| ABS["🤷 Abstain"]
-        G2 -->|grounded| FAST["✅ FAST ANSWER<br/>grounded + cited"]
-    end
-
-    FAST --> LLM["🤖 LLM polish<br/>Gemini · 1.3s · outside budget"]
-    LLM --> VER["🛡️ Verify generated text<br/>novel-fact check"]
-    VER -->|passes| FINAL["✨ Polished answer"]
-    VER -->|"rejected, timeout or error"| KEEP["↩️ Keep the fast answer"]
-
-    style BUDGET fill:#0d2818,stroke:#3fb950,stroke-width:3px,color:#e6edf3
-    style FAST fill:#1a4d2e,stroke:#3fb950,stroke-width:2px,color:#ffffff
-    style FINAL fill:#1d3f6b,stroke:#4c9aff,color:#ffffff
-    style KEEP fill:#1a4d2e,stroke:#3fb950,color:#ffffff
-    style REFUSE fill:#4d1f1c,stroke:#f85149,color:#ffffff
-    style ABS fill:#4d3c15,stroke:#d29922,color:#ffffff
+```
+Browser (web/)
+  │
+  ├─ text input / mic recording (WAV, 16 kHz mono)
+  │
+  ▼
+FastAPI server (api/main.py)
+  │
+  ├── POST /ask ────────────────────────────────► core/harness.py::RAGHarness.answer()
+  │                                                    │
+  ├── POST /voice ──► core/stt.py::SarvamSTT           │
+  │                   (Sarvam API → transcript)         │
+  │                         │                           │
+  │                         └──────────────────────────►│
+  │                                                    │
+  │                                               1. check_input (guardrails)
+  │                                               2. script routing:
+  │                                                    Latin → english_256 (BM25)
+  │                                                    Devanagari → metadata_128
+  │                                               3. embed_query (multilingual-e5-small,
+  │                                                    ONNX, optional)
+  │                                               4. retrieve (BM25 sparse, ±HNSW dense)
+  │                                               5. extract_answer (best span)
+  │                                               6. check_output (grounding gate)
+  │                                               7. [optional] LLM generate + verify
+  │                                                    │
+  └──────────────────────────────────────────────────◄─┘
+                                          JSON response
 ```
 
-### The one design decision that matters
+**Data flow — voice path:**
 
-**The extractive answer is computed before generation and never depends on it.**
-
-That single choice does three jobs at once:
-
-1. It makes the sub-200ms claim *measurable* — the fast answer is real, grounded, and
-   citable on its own, not a placeholder.
-2. It is the error-recovery path. An LLM timeout, a 429, malformed JSON, or a failed
-   grounding check leaves a real answer standing. Recovery here is a **second answer
-   already computed**, not a `try/except`.
-3. It makes the demo feel instant instead of showing a spinner.
+```
+Mic → MediaRecorder → OfflineAudioContext resample to 16 kHz → WAV blob
+    → POST /voice (multipart file=<wav>)
+    → SarvamSTT.transcribe() → transcript string
+    → RAGHarness.answer(transcript) → same pipeline as /ask
+    → JSON + stt_ok, transcript, stt_ms, stt_language
+```
 
 ---
 
-## Requirements → where they live
+## Tech Stack
 
-| # | Requirement | Implementation | Evidence |
-|---|---|---|---|
-| 1 | Speech-to-text (Sarvam / ElevenLabs) | `core/stt.py` — Sarvam **Saaras v3** | 499–1316ms measured, code-mix tolerant |
-| 2 | Chunking must be **vast** | `ingest/chunkers.py` — 4 strategies × sizes × granularities | [ablation below](#2-chunking--12-variants-tested-1-shipped) |
-| 3 | Under 200ms | Two-tier answering, `core/harness.py` | **P50 64ms, 300/300 inside budget** |
-| 4 | P50 / P70 / P100 analytics | `bench/fastpath.py`, live `/benchmark` | [numbers below](#4-latency-analytics) |
-| 5 | Harness | `core/harness.py` — typed I/O, retries, timeouts, fallback | 4 LLM backends behind one interface |
-| 6 | Guardrails | `core/guardrails.py` — both sides of generation | [below](#6-guardrails--knowing-when-not-to-answer) |
-
----
-
-## 2. Chunking — 12 variants tested, 1 shipped
-
-The task asks for real thought about how the dataset is split and retrieved. Here is the
-thinking, including the parts that went wrong.
-
-**Passage-level chunking is a no-op on MSMARCO.** The first ablation returned a *null
-result* — four strategies within 1.2% of each other, because MSMARCO ships pre-segmented
-passages that already sit under any sensible chunk budget. All four strategies were
-emitting "the whole passage, unchanged" (1.01 chunks per passage). We had built four ways
-to not split anything.
-
-**A tokenisation bug was corrupting the sparse index.** Python's `\w` excludes Devanagari
-vowel signs and the virama, so `re.findall(r"\w+", ...)` shatters Hindi words:
-
-```
-दिल्ली  ->  ['द', 'ल', 'ल']          # BM25 was indexing consonant fragments
-Delhi   ->  ['Delhi']                # English unaffected, which is how it hid
-```
-
-Fixing it (`core/text.py`, tokenise by *separators*, not character class) gained **+12%
-MRR** — three times what all the ensemble work gained. It also *inverted* an earlier
-conclusion: `metadata_128` appeared to hurt before the fix and helps after.
-
-**Then the ensemble stopped paying at full scale.** All 7 index subsets, 1,500 bilingual
-queries:
-
-| Configuration | Chunks | MRR@10 | R@10 | R@20 | search P50 | disk |
-|---|---:|---:|---:|---:|---:|---:|
-| **metadata_128** ← shipped | 241,572 | **0.3030** | 0.5669 | 0.6675 | 4.32ms | **722MB** |
-| fixed_256 | 201,298 | 0.2895 | 0.5601 | 0.6607 | 4.28ms | 623MB |
-| semantic_128 | 239,175 | 0.2822 | 0.5552 | 0.6502 | 4.50ms | 705MB |
-| fixed + semantic | 440,473 | 0.2903 | 0.5637 | 0.6613 | 7.50ms | 1328MB |
-| fixed + metadata | 442,870 | 0.2973 | 0.5684 | **0.6697** | 7.20ms | 1345MB |
-| semantic + metadata | 480,747 | 0.2942 | 0.5642 | 0.6612 | 7.60ms | 1427MB |
-| all three (ensemble) | 682,045 | 0.2926 | **0.5717** | 0.6621 | 11.27ms | 2050MB |
-
-The ensemble *appears* to win R@10 by 0.0048. Paired bootstrap over the same queries
-(10,000 resamples) says that margin isn't real:
-
-```
-ENSEMBLE − metadata_128   MRR@10     −0.0105  [−0.0185, −0.0026]   significant
-ENSEMBLE − metadata_128   R@10       +0.0047  [−0.0076, +0.0168]   not significant
-ENSEMBLE − metadata_128   R@20       −0.0054  [−0.0173, +0.0064]   not significant
-```
-
-**Every recall difference is inside the noise.** The only real difference favours the
-single index. Three indexes cost 2.8× the memory and 2.6× the search time to buy nothing
-measurable — so we ship one.
-
-> **Caveat we report rather than hide.** `metadata_128` embeds the passage's `query_type`,
-> which the dataset derives from the query that owns the passage — so gold passages carry
-> the asking query's label. Its advantage over `fixed_256` scales inversely with how common
-> the type is (corpus share vs advantage correlates **−0.638**; PERSON at 2.7% of the corpus
-> gains +0.034, DESCRIPTION at 59.4% gains +0.011 and not significantly). Part of this
-> strategy's edge is a property of the dataset, not of chunking.
-
-The other strategies stay in the repo and are queryable live — `/compare` runs a question
-through every index side by side, so you can watch them disagree.
-
----
-
-## 4. Latency analytics
-
-300 real corpus queries, run one at a time on the serving box:
-
-| Stage | P50 | P70 | P90 | P99 | P100 |
-|---|---:|---:|---:|---:|---:|
-| Input guardrail | 0.02 | 0.02 | 0.02 | 0.03 | 0.44 |
-| Embed query | 4.05 | 4.43 | 5.00 | 6.34 | 12.3 |
-| Retrieve (dense + sparse + RRF) | 2.75 | 3.12 | 4.08 | 4.78 | 9.5 |
-| **Extract answer** | **51.2** | 54.9 | 61.0 | 69.5 | 79.0 |
-| Output guardrail | 0.23 | 0.25 | 0.29 | 1.25 | 1.75 |
-| **Fast path total** | **64** | **69** | 73 | 90 | **115** |
-
-Reported separately, outside the measured budget:
-
-| | Latency |
-|---|---:|
-| Speech-to-text (Sarvam Saaras v3) | 499–1316ms |
-| LLM polish (Gemini flash-lite) | ~1.3–2.2s |
-
-### Three findings behind those numbers
-
-**The tail was padding, not workload.** `extract` owned the entire over-budget tail. Its
-latency correlates with the *longest sentence in the batch* at **0.84**, and with the
-*number* of sentences at **0.02** — the slowest decile embeds the same ~8.8 sentences as
-the median. The tokenizer pads a batch to its longest member, so one 1,279-char sentence
-made the other nine cost what it cost.
-
-**int8 embeddings are not batch-invariant.** Fixing the above by embedding one sentence at
-a time was expected to be answer-identical (mean pooling is masked). It wasn't — which
-forced the question. The model is *dynamically* quantised, so activation scales are
-computed from a tensor spanning the batch:
-
-```
-same text, batched with a long sentence vs embedded alone
-  int8   max|Δ| = 1.03e-02   cos 0.9981    ← NOT invariant
-  fp32   max|Δ| = 4.66e-08   cos 1.0000    ← invariant, as expected
-```
-
-A large batch isn't the accurate configuration you trade away for speed — **it is the
-degraded one**. Batch 1 is both fastest through P99 and the fidelity reference.
-
-**One corpus row was the entire P100.** A single query is **2,717 characters** — a
-translation artifact where a phrase repeats — against a median of 32. It forced a full
-512-token forward pass. Capping the query at 512 chars cut P100 nearly in half.
-
----
-
-## 6. Guardrails — knowing when *not* to answer
-
-Guardrails run on **both sides** of generation. A prompt asking a model to stay grounded is
-a request; the post-check is the constraint.
-
-| Layer | What it does |
+| Layer | Technology |
 |---|---|
-| Input intent | Refuses credential solicitation and unsafe asks *before* spending retrieval |
-| Grounding gate | Abstains when support < 0.45 — no LLM call over weak context |
-| Generated-text verify | Independently checks the LLM's output for novel facts |
-
-**Intent cannot be a score threshold.** Measured: *"मेरे बैंक खाते का पासवर्ड क्या है?"*
-scored **0.596 support** — higher than several legitimate questions — because the corpus
-genuinely contains bank-security passages and retrieval did its job. Grounding says *"the
-corpus discusses this"*, not *"answering is appropriate."*
-
-**A real abstain, worth trying.** Ask *"What is the capital of India?"* in English and the
-system **abstains**. The corpus contains the answer in Hindi, but the multilingual encoder
-maps the English query nearer *"जकार्ता इंडोनेशिया की राजधानी है"* (Jakarta / Indonesia)
-than to the correct passage. Rather than answer confidently and wrongly, it declines. Ask
-the same thing in Hindi — *"भारत की राजधानी क्या है?"* — and it answers with support 0.787.
-
-That contrast is the guardrail doing its job, and we'd rather show it than hide it.
-
----
-
-## Dataset
-
-[`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI) — Hindi +
-Marathi subset.
-
-| | |
-|---|---:|
-| Queries ingested | 20,000 (10k hin + 10k mar) |
-| Passages | 199,668 |
-| Chunks indexed (`metadata_128`) | 241,572 |
-| Index size | 722MB |
-
-A row in this dataset is a **query**, not a passage — each carries ~10 passages, so the
-full corpus is ~100M passages across 13 languages. Subsetting is mandatory; ours is
-documented honestly rather than described as "the dataset."
-
-> **A bug worth recording.** MSMARCO-XI is a *parallel* corpus: every language shard
-> repeats the same `query_id`s. Our passage ids were `f"{query_id}:{i}"`, so **99,834 of
-> 99,834 passage ids collided** across Hindi and Marathi — same id, different text. Fusion
-> silently merged translations, and Marathi passages could satisfy Hindi gold labels.
-> Invisible during the Hindi-only pilot; it appeared the moment a second language landed.
-> Ids are now namespaced by language, verified by `eval/audit_ids.py`.
+| Web framework | FastAPI 0.115+ |
+| ASGI server | Uvicorn |
+| Data validation | Pydantic v2 |
+| Sparse retrieval | bm25s 0.2+ |
+| Dense retrieval | hnswlib 0.8+ (optional) |
+| Embedder | multilingual-e5-small via ONNX Runtime 1.20+ |
+| Tokenizer | HuggingFace `tokenizers` (XLM-R vocab) |
+| Speech-to-text | Sarvam AI `saaras:v3` |
+| LLM providers | AWS Bedrock, Google Gemini, Anthropic, OpenRouter, NVIDIA NIM (all optional) |
+| Data format | Apache Arrow / Parquet (ingest only) |
+| HTTP client | httpx |
+| Python | ≥3.11, <3.13 |
+| Package manager | [uv](https://docs.astral.sh/uv/) |
+| Container | Docker (CPU: `Dockerfile`; GPU ingest: `Dockerfile.gpu`) |
+| Frontend | Vanilla HTML + CSS + JavaScript (no framework) |
 
 ---
 
-## Running it
+## Project Structure
 
-Everything runs in Docker — no system Python required.
-
-```bash
-cp .env.example .env        # add SARVAM_API_KEY and one LLM key
-docker compose up api       # serves on :8000
+```
+.
+├── api/
+│   └── main.py              # FastAPI application, all HTTP routes
+├── core/
+│   ├── embedder.py          # multilingual-e5-small ONNX wrapper
+│   ├── extractive.py        # span extraction and support scoring
+│   ├── guardrails.py        # input/output safety checks
+│   ├── harness.py           # RAGHarness: orchestrates the full pipeline
+│   ├── index.py             # ChunkIndex: HNSW + BM25 per strategy
+│   ├── retriever.py         # AdaptiveRetriever, RRF fusion, language routing
+│   ├── stt.py               # Sarvam STT client
+│   └── text.py              # Devanagari-safe tokenisation for BM25
+├── ingest/
+│   ├── chunkers.py          # fixed / sentence / semantic / metadata strategies
+│   ├── download.py          # MSMARCO-XI parquet streaming
+│   ├── pipeline.py          # end-to-end ingest: download → chunk → embed → index
+│   ├── build_english.py     # builds english_256 with dense HNSW (needs GPU)
+│   ├── build_english_bm25.py# builds english_256 BM25-only (~5 s, no GPU)
+│   └── SCHEMA.md            # documented corpus schema
+├── bench/
+│   ├── fastpath.py          # end-to-end fast-path latency benchmark
+│   ├── latency.py           # single ChunkIndex latency
+│   ├── profile_extract.py   # extractive answer profiling
+│   └── tune_extract.py      # extractive parameter tuning
+├── eval/
+│   ├── evaluate.py          # MRR@10, R@10, R@20 over labelled queries
+│   ├── ablate.py / ablate_full.py  # chunking strategy ablation
+│   ├── significance.py      # paired bootstrap confidence intervals
+│   └── behaviour.py         # qualitative answer behaviour analysis
+├── tests/
+│   └── test_direct_retrieval.py  # 12 pytest tests
+├── web/
+│   ├── index.html           # single-page UI
+│   ├── main.js              # API calls, voice recording, telemetry
+│   └── styles.css           # visual design
+├── data/
+│   ├── raw/                 # downloaded JSONL corpus (gitignored)
+│   ├── index/full/          # built indexes (gitignored)
+│   │   ├── metadata_128/    # served Indic index — 203,757 chunks
+│   │   └── english_256/     # English BM25 index — 98,812 chunks
+│   └── reports/             # benchmark output JSON + Markdown (committed)
+├── docs/
+│   ├── BUILD_LOG.md         # chronological development log
+│   ├── HANDOVER.md          # deployment and operational notes
+│   └── GPU_SETUP.md         # GPU ingest setup
+├── Dockerfile               # CPU serving image (multi-arch)
+├── Dockerfile.gpu           # CUDA image for ingest only
+├── docker-compose.yml       # local development and benchmark services
+├── pyproject.toml           # dependencies (uv / pip)
+└── .env.example             # all environment variables documented
 ```
 
-Build the index from scratch (~2–3 hours, checkpointed per stage):
-
-```bash
-docker compose run --rm ingest
-```
-
-### Reproduce the measurements
-
-```bash
-docker compose run --rm bench python -m bench.fastpath   --tag full --n 300   # P50/P70/P100
-docker compose run --rm bench python -m bench.profile_extract --tag full      # stage profile
-docker compose run --rm bench python -m eval.ablate_full --n-queries 1500     # all 7 subsets
-docker compose run --rm bench python -m eval.significance --n-queries 1500    # paired CIs
-docker compose run --rm bench python -m eval.audit_ids   --tag full           # id integrity
-```
-
-Raw outputs for every table above live in [`data/reports/`](data/reports/).
-
 ---
 
-## API
+## Backend API
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /ask` | `{question, generate}` → grounded answer + per-stage timings |
-| `POST /voice` | audio upload → Sarvam STT → answer |
-| `POST /compare` | one question through **every** chunking strategy, side by side |
-| `GET /benchmark?n=100` | live P50/P70/P100 over real corpus queries |
-| `GET /health` | index sizes, embedder variant, readiness |
+All endpoints are served by `api/main.py` via uvicorn. The static frontend is
+mounted at `/` from `web/`.
 
----
+### `POST /ask`
 
-## Stack
+Submit a text question and receive an extractive (or LLM-generated) answer.
 
-| Layer | Choice | Why |
+**Request body (JSON):**
+```json
+{
+  "question": "What is the capital of India?",
+  "generate": null
+}
+```
+
+| Field | Type | Description |
 |---|---|---|
-| STT | Sarvam Saaras v3 | Indic + code-mixed speech |
-| Embeddings | `multilingual-e5-small` (384-dim, ONNX int8) | Multilingual — English-only models fail on Devanagari |
-| Dense index | `hnswlib` | Builds cleanly on ARM; faiss aarch64 wheels are unreliable |
-| Sparse index | `bm25s` | Pure numpy, ARM-safe |
-| Fusion | Reciprocal Rank Fusion | Fuses by rank, so BM25 scores never need calibrating against cosine |
-| Generation | Gemini (+ Bedrock / Anthropic / OpenRouter behind one interface) | Generation is the only stage that leaves the machine, so it's the only one that fails for reasons we don't control |
-| Serving | AWS `m7i-flex.large`, Docker, Caddy TLS | x86 AVX-512 VNNI int8 path; dedicated cores keep the tail predictable |
+| `question` | `string` (1–1000 chars) | The question to answer |
+| `generate` | `bool \| null` | `true` forces LLM generation; `null` follows `ANSWER_MODE` env var |
 
-The full engineering record — including the measurements that changed our minds — is in
-[`docs/BUILD_LOG.md`](docs/BUILD_LOG.md).
+**Response (JSON):**
+```json
+{
+  "success": true,
+  "mode": "direct",
+  "query": "What is the capital of India?",
+  "answer": "The capital of India is New Delhi.",
+  "decision": "allow",
+  "reason": "",
+  "answer_source": "extractive",
+  "extractive_answer": "The capital of India is New Delhi.",
+  "generated_answer": "",
+  "route": "english",
+  "support": 0.7234,
+  "grounding": 0.8100,
+  "grounded": true,
+  "threshold": 0.45,
+  "results": [{ "source": "eng:...", "text": "...", "score": 0.016 }],
+  "citations": [...],
+  "fast_path_ms": 32.1,
+  "total_ms": 32.1,
+  "timings_ms": { "guardrail_in": 0.01, "retrieve_sparse": 2.3, ... }
+}
+```
+
+`answer_source` is one of: `extractive`, `generated`, `abstain`, `refusal`, `greeting`.
+
+---
+
+### `POST /voice`
+
+Submit a WAV audio file; returns transcript plus the same answer payload as `/ask`.
+
+**Request:** `multipart/form-data`
+
+| Field | Type | Description |
+|---|---|---|
+| `file` | `UploadFile` | WAV audio (16 kHz mono recommended, ≤30 s) |
+| `generate` | `bool \| null` | Optional form field; same as `/ask` |
+
+**Response (JSON):**
+
+All fields from `/ask`, plus:
+
+| Field | Type | Description |
+|---|---|---|
+| `stt_ok` | `bool` | `true` if transcription succeeded |
+| `transcript` | `string` | The transcribed text |
+| `stt_ms` | `float` | STT round-trip time in milliseconds |
+| `stt_language` | `string` | Detected language code (e.g. `hi-IN`) |
+
+Returns `HTTP 400` if STT fails; `HTTP 503` if STT or index is unavailable.
+
+---
+
+### `POST /compare`
+
+Run the current question against all three Indic chunking strategies
+(`fixed_256`, `semantic_128`, `metadata_128`) and return per-strategy hits and
+support scores. Used by the ablation panel in the UI.
+
+**Request body:** same as `/ask` (`question` required).
+
+**Response:** `{ "query": "...", "strategies": { "<name>": { "extractive_answer", "support", "hits", "ms" } } }`
+
+---
+
+### `GET /health`
+
+Readiness probe and status summary.
+
+**Response:**
+```json
+{
+  "status": "ready",
+  "serving": ["metadata_128"],
+  "n_indexes": 2,
+  "total_chunks": 203757,
+  "embedding_runtime": "unavailable",
+  "started_ms": 1842.3,
+  "stt_configured": true,
+  "mode": "direct",
+  "embedder_variant": "int8_arm",
+  "index_tag": "full"
+}
+```
+
+`total_chunks` reflects only the **serving** index (not all loaded indexes).
+`embedding_runtime` is `"unavailable"` when `ENABLE_DENSE_RETRIEVAL=false` (the default).
+
+---
+
+### `GET /diag/health`
+
+Lightweight diagnostic; responds before the index finishes loading.
+
+```json
+{
+  "status": "ok",
+  "pure_python": true,
+  "retrieval": "available",
+  "embedding_runtime": "unavailable",
+  "dense_retrieval_enabled": false,
+  "index": "available",
+  "llm_required": false
+}
+```
+
+---
+
+### `GET /diag/memory`
+
+Process memory and runtime configuration.
+
+```json
+{
+  "status": "ok",
+  "pid": 1,
+  "rss_mb": 412.0,
+  "answer_mode": "direct",
+  "embedder_initialized": false,
+  "dense_retrieval_enabled": false,
+  "indexes_loaded": 2
+}
+```
+
+---
+
+### `GET /diag/imports`
+
+Tests that each native binary dependency can be imported in an isolated subprocess
+(prevents `SIGILL` / `Illegal instruction` from crashing the main process on hosts
+without the required CPU instructions).
+
+Returns per-package `safe: bool`, return code, stdout/stderr, and latency.
+
+---
+
+### `GET /diag/embedding`
+
+Reports whether the ONNX embedder initialised successfully and which provider and
+model variant were selected.
+
+---
+
+### `GET /diag/ort`
+
+Full ONNX Runtime diagnostic: version, selected provider, variant, and a live
+inference test. Useful for debugging `SIGILL` or provider fall-through issues.
+
+---
+
+> **Note:** The frontend calls `GET /benchmark?n=100` to populate the live
+> telemetry strip. This endpoint is **not implemented** in the current backend.
+> Clicking "▶ Run 100 Live Test" will fail with a network error in the UI.
+> Use `python -m bench.fastpath` locally instead (see [Benchmarking](#benchmarking)).
+
+---
+
+## Voice / STT
+
+Audio is recorded in the browser using the `MediaRecorder` API, resampled to
+16 kHz mono WAV via `OfflineAudioContext`, then sent to `POST /voice` as a
+`multipart/form-data` upload.
+
+The backend uses `core/stt.py::SarvamSTT`:
+
+- **Endpoint:** `https://api.sarvam.ai/speech-to-text`
+- **Model:** `saaras:v3` (replaces the deprecated `saarika:v2.5`)
+- **Mode:** `transcribe` — preserves the source language rather than translating
+- **Auth:** `api-subscription-key: <SARVAM_API_KEY>` header
+- **Limit:** 30 seconds of audio; longer recordings are rejected
+- **Retry:** up to 2 retries with backoff on `5xx` and `429` responses; `4xx`
+  (bad key, unsupported format) are not retried
+
+Supported language codes: `hi-IN`, `mr-IN`, `en-IN`, `bn-IN`, `kn-IN`,
+`ml-IN`, `od-IN`, `pa-IN`, `ta-IN`, `te-IN`, `gu-IN`.
+
+If `SARVAM_API_KEY` is not set, the microphone button is disabled in the UI and
+`stt_configured: false` is returned by `/health`.
+
+---
+
+## Retrieval / Knowledge Base
+
+### Corpus
+
+Source: `ai4bharat/MSMARCO-XI` (HuggingFace), Hindi and Marathi train shards.
+Each shard contains parallel English + translated passages with gold relevance
+labels (`is_selected`).
+
+Raw data is stored in `data/raw/{hin,mar}_train_passages.jsonl` after ingestion.
+
+### Indexes
+
+| Index | Language | Chunks | BM25 | HNSW |
+|---|---|---|---|---|
+| `metadata_128` | Hindi + Marathi (`text_translated`) | 203,757 | ✅ | Optional |
+| `english_256` | English (`text_eng`, deduped) | 98,812 | ✅ | Not built |
+
+`metadata_128` is the **served** index by default (`SERVE_ENSEMBLE=metadata_128`).
+`english_256` is loaded alongside it for English-query routing.
+
+> **Dense retrieval is disabled by default** (`ENABLE_DENSE_RETRIEVAL=false`) to
+> stay within Render Free's 512 MB RAM limit. The BM25 sparse path is always active.
+
+### Chunking strategies (used during ingest)
+
+Four strategies are defined in `ingest/chunkers.py` and measured in `eval/`:
+
+| Name | Strategy | Max tokens |
+|---|---|---|
+| `fixed_128` | Fixed token window | 128 |
+| `fixed_256` | Fixed token window | 256 |
+| `sentence_128` | Whole-sentence packing | 128 |
+| `semantic_128` | Similarity-based split | 128 |
+| `metadata_128` | Passage-native + query-type tag | 128 |
+
+Only `metadata_128` is shipped and served. An ablation over 1,500 queries showed
+the three-index ensemble is not significantly better than `metadata_128` alone on
+MRR@10 or R@10, while costing 2.8× the memory and 2.6× the search time (see
+`data/reports/full_significance.md`).
+
+### Query routing
+
+`core/retriever.py::is_latin_query()` classifies the input script:
+
+- ≥90% Latin characters → routed to `english_256` (English BM25)
+- otherwise → routed to `metadata_128` (Indic BM25)
+
+### Retrieval pipeline
+
+1. **Input guardrail** — regex patterns check for unsafe intent (credentials,
+   self-harm, weapon synthesis) in both English and Hindi/Marathi.
+2. **Embedding** (if `ENABLE_DENSE_RETRIEVAL=true`) — `multilingual-e5-small`
+   encodes the query with the mandatory `"query: "` prefix.
+3. **Retrieval** — BM25 sparse search (default) or HNSW+BM25 hybrid with
+   Reciprocal Rank Fusion if dense is enabled.
+4. **Extractive answer** — the best-supported 1–2 sentence span is selected by
+   blending cosine similarity (75%) and lexical overlap (25%).
+5. **Output guardrail** — grounding gate: if `support < RETRIEVAL_THRESHOLD`
+   (default 0.45), the system abstains rather than returning a low-confidence span.
+6. **LLM generation** (optional) — when `ANSWER_MODE=llm`, the extractive span is
+   rewritten; the result is verified against the retrieved context and kept only if
+   it passes the grounding check.
+
+### Tokenisation
+
+`core/text.py` defines a Devanagari-safe tokeniser used by BM25. It splits on
+whitespace and separators (including the Hindi danda `।` and double danda `॥`)
+rather than on character class, preserving whole words in any script.
+
+---
+
+## Measured Performance
+
+From `data/reports/full_final_metadata_128_latency.md` (300 queries, aarch64,
+`metadata_128` only, dense retrieval enabled, `multilingual-e5-small int8_arm`):
+
+| Stage | P50 | P70 | P100 |
+|---|---:|---:|---:|
+| guardrail_in | 0.008 ms | 0.009 ms | 9.861 ms |
+| embed_query | 1.749 ms | 1.954 ms | 86.903 ms |
+| retrieve | 2.282 ms | 2.611 ms | 10.254 ms |
+| extract | 26.214 ms | 28.509 ms | 44.757 ms |
+| guardrail_out | 0.107 ms | 0.118 ms | 1.190 ms |
+| **fast_path_total** | **30.5 ms** | **32.9 ms** | **129.5 ms** |
+
+300/300 queries under the 200 ms budget (dense retrieval enabled on aarch64).
+STT and LLM generation are excluded from these measurements.
+
+> These numbers were measured during development on an Oracle aarch64 instance
+> with dense retrieval enabled. The production Render deployment runs BM25-only
+> (`ENABLE_DENSE_RETRIEVAL=false`), which skips the embedding step entirely.
+
+---
+
+## Diagnostics
+
+```bash
+# Readiness (use as health check)
+curl https://pregunta-backend.onrender.com/health
+
+# Lightweight check (responds before index loads)
+curl https://pregunta-backend.onrender.com/diag/health
+
+# Process memory and config
+curl https://pregunta-backend.onrender.com/diag/memory
+
+# Dependency import check (subprocess isolation)
+curl https://pregunta-backend.onrender.com/diag/imports
+
+# ONNX Runtime / embedder status
+curl https://pregunta-backend.onrender.com/diag/ort
+curl https://pregunta-backend.onrender.com/diag/embedding
+```
+
+---
+
+## Configuration
+
+Copy `.env.example` to `.env` and set the values you need. The application reads
+these at runtime via `os.getenv()`.
+
+### Required
+
+| Variable | Description |
+|---|---|
+| *(none strictly required)* | The server starts without any key. Voice is disabled and answers are text-only. |
+
+### Optional — Voice (STT)
+
+| Variable | Description |
+|---|---|
+| `SARVAM_API_KEY` | Sarvam AI key. Without it the `/voice` endpoint returns 503. |
+
+### Optional — LLM Generation
+
+Set `ANSWER_MODE=llm` and one of:
+
+| Variable | Description |
+|---|---|
+| `LLM_PROVIDER` | `gemini`, `anthropic`, `openrouter`, `bedrock`, `nvidia` |
+| `GEMINI_API_KEY` + `GEMINI_MODEL` | Google Gemini |
+| `ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` | Anthropic Claude |
+| `OPENROUTER_API_KEY` + `OPENROUTER_MODEL` | OpenRouter |
+| `NVIDIA_API_KEY` + `NVIDIA_MODEL` | NVIDIA NIM |
+| `BEDROCK_MODEL` + `BEDROCK_REGION` | AWS Bedrock (uses credential chain, no explicit key) |
+| `LLM_TIMEOUT_S` | Per-call timeout in seconds (default: 30) |
+
+### Optional — Runtime / Index
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANSWER_MODE` | `direct` | `direct` (BM25 extractive only) or `llm` |
+| `PORT` | `8000` | Uvicorn listen port |
+| `DATA_ROOT` | `/data` or `./data` | Root of the data directory |
+| `INDEX_PATH` | `$DATA_ROOT/index` | Parent of index tag directories |
+| `INDEX_TAG` | `full` | Which index build to serve |
+| `SERVE_ENSEMBLE` | `metadata_128` | Comma-separated list of indexes to serve |
+| `ENABLE_DENSE_RETRIEVAL` | `false` | Set `true` to load HNSW and embed queries |
+| `E5_VARIANT` | `int8_arm` | ONNX model variant: `fp32`, `int8_x86`, `int8_arm` |
+| `ORT_PROVIDERS` | `CPUExecutionProvider` | ONNX Runtime execution provider(s) |
+| `ORT_THREADS` | `0` (auto) | Thread count for ONNX Runtime inference |
+| `RETRIEVAL_THRESHOLD` | `0.45` | Minimum support score; below this the system abstains |
+| `CONTEXT_PASSAGES` | `4` | Number of retrieved passages passed to generation |
+| `INDEX_DOWNLOAD_URL` | *(unset)* | HTTPS URL to a `.tar.gz` index artifact; downloaded on cold start if set |
+| `INDEX_SHA256` | *(unset)* | SHA-256 hex of the artifact; required when `INDEX_DOWNLOAD_URL` is set |
+| `HF_TOKEN` | *(unset)* | HuggingFace token for corpus download; lifts anonymous rate limit |
+
+### Development-only
+
+| Variable | Description |
+|---|---|
+| `AWS_PROFILE` | Named AWS profile for Bedrock |
+| `AWS_DEFAULT_REGION` | AWS region for Bedrock |
+| `INDEX_S3_URI` | S3 path for index storage (not used by the application at runtime) |
+
+---
+
+## Local Development
+
+### Prerequisites
+
+- Python 3.11 or 3.12
+- [uv](https://docs.astral.sh/uv/) package manager
+
+### Setup
+
+```bash
+git clone https://github.com/serionmon/hhwork.git
+cd hhwork
+
+# Install dependencies (creates .venv automatically)
+uv sync
+
+# Copy and edit environment variables
+cp .env.example .env
+# Set SARVAM_API_KEY if you want voice, and a LLM key if you want generation.
+```
+
+### Running the backend
+
+The backend requires a built index. See [Building the index](#building-the-index)
+first if `data/index/full/` is empty.
+
+```bash
+# Start the API server (serves frontend from web/ automatically)
+uv run uvicorn api.main:app --reload --port 8000
+```
+
+The frontend is served at `http://localhost:8000/`.
+
+### Building the index
+
+**Download the corpus first:**
+
+```bash
+uv run python -m ingest.pipeline --langs hin mar --max-queries 25000 --stream
+```
+
+This streams the parquet shards without storing them and runs chunking +
+embedding + indexing. Requires ~1–4 hours (embedding dominates). Dense
+embedding requires `ENABLE_DENSE_RETRIEVAL=true` and a compatible ONNX Runtime.
+
+**Build the English BM25 index** (fast, no GPU, no embedding):
+
+```bash
+uv run python -m ingest.build_english_bm25
+```
+
+This reads `text_eng` from the already-downloaded `data/raw/` files and builds
+`data/index/full/english_256/` in ~5 seconds. No GPU or ONNX Runtime needed.
+
+### Running tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+12 tests covering: answer mode defaults, direct retrieval, relevance thresholding,
+API schema, error handling, diagnostic endpoints, sparse retrieval fallback,
+`ChunkIndex` HNSW skip, and dense retrieval flag.
+
+### Benchmarking
+
+```bash
+# End-to-end fast-path latency (300 queries, requires built index and ONNX)
+uv run python -m bench.fastpath --tag full --n 300
+
+# Single-index latency
+uv run python -m bench.latency --tag full
+
+# Chunking strategy ablation
+uv run python -m eval.ablate_full --tag full
+```
+
+Results are written to `data/reports/`.
+
+---
+
+## Deployment
+
+The live service runs on [Render](https://render.com) Free tier.
+
+### Key constraints on Render Free
+
+- **No persistent disk** — the index is re-downloaded on every cold start via
+  `INDEX_DOWNLOAD_URL`. The download URL and `INDEX_SHA256` must be set in Render
+  environment variables.
+- **512 MB RAM** — dense retrieval (`ENABLE_DENSE_RETRIEVAL=true`) is disabled in
+  production to avoid OOM. Only BM25 sparse retrieval is active.
+- **Cold starts** — the first request after inactivity triggers index download
+  (≥60 MB) + BM25 load. `GET /diag/health` responds immediately; `GET /health`
+  returns `"status": "unready"` until index loading completes.
+
+### Required Render environment variables
+
+```
+SARVAM_API_KEY=<key>
+INDEX_DOWNLOAD_URL=<https://...tar.gz>
+INDEX_SHA256=<sha256hex>
+INDEX_TAG=full
+SERVE_ENSEMBLE=metadata_128
+ANSWER_MODE=direct
+PORT=8000
+```
+
+### Index artifact
+
+The deployment tarball must contain at least the `metadata_128/` strategy
+directory (with `meta.pkl` and `bm25/`). To enable English routing, include
+`english_256/` as well. The combined tarball can be generated locally:
+
+```bash
+python -c "
+import tarfile
+with tarfile.open('data/metadata_128_english_256_bm25.tar.gz', 'w:gz') as t:
+    t.add('data/index/full/metadata_128', arcname='metadata_128')
+    t.add('data/index/full/english_256',  arcname='english_256')
+"
+```
+
+Upload this file to object storage (S3, R2, GCS, etc.) and set `INDEX_DOWNLOAD_URL`
+to the public HTTPS URL, plus `INDEX_SHA256` to its SHA-256 hex digest.
+
+### Docker (local or self-hosted)
+
+```bash
+# Build and start the API server
+docker compose up api
+
+# Run the ingest pipeline (streams corpus, no local parquet download)
+docker compose run --rm ingest
+
+# Run benchmarks against a local index
+docker compose run --rm bench
+```
+
+The GPU image (`Dockerfile.gpu`) is for the ingest stage only and requires
+CUDA 12.x + cuDNN 9. The serving container (`Dockerfile`) is CPU-only and
+multi-arch (amd64 + aarch64).
+
+---
+
+## Testing
+
+```
+tests/
+└── test_direct_retrieval.py   (12 tests)
+```
+
+| Test | What it covers |
+|---|---|
+| `test_answer_mode_defaults_to_direct` | `ANSWER_MODE` defaults to `direct` |
+| `test_direct_retrieval_no_llm_required` | BM25 extractive path needs no LLM key |
+| `test_relevance_threshold_no_result_behavior` | Low-support queries abstain cleanly |
+| `test_api_structured_response_schema` | `/ask` response schema is correct |
+| `test_api_no_result_structured_schema` | `/ask` response when nothing found |
+| `test_empty_and_malformed_queries` | Empty/missing `question` → 422 |
+| `test_unhandled_exception_returns_controlled_json` | Uncaught errors → 500 JSON |
+| `test_diag_health_without_onnx` | `/diag/health` works without ONNX Runtime |
+| `test_sparse_retrieval_fallback_without_onnx` | BM25 path works without embedder |
+| `test_diag_memory_endpoint` | `/diag/memory` response structure |
+| `test_dense_retrieval_disabled_by_default` | `ENABLE_DENSE_RETRIEVAL` defaults to `false` |
+| `test_chunk_index_load_does_not_initialize_hnsw_by_default` | `load_hnsw=False` skips HNSW |
+
+Run with:
+
+```bash
+uv run pytest tests/ -v
+```
+
+---
+
+## Known Limitations
+
+- **`/benchmark` endpoint is not implemented.** The UI button "▶ Run 100 Live Test"
+  calls `GET /benchmark?n=100`, which is not present in `api/main.py`. It will
+  always fail with a network error. Use `python -m bench.fastpath` locally.
+
+- **Dense retrieval is off in production.** Render Free has 512 MB RAM. Loading
+  the HNSW index plus the BM25 corpus exceeds this. Queries are answered by BM25
+  sparse retrieval only (`ENABLE_DENSE_RETRIEVAL=false`).
+
+- **English routing requires the `english_256` index.** If the deployment tarball
+  does not include `english_256/`, English questions fall back to the Devanagari
+  BM25 index and may return Hindi-language passages.
+
+- **Index is not persistent on Render Free.** Every cold start re-downloads and
+  re-loads the full index (~60–90 MB download + several seconds to deserialise).
+
+- **Corpus is multilingual (Hindi/Marathi), not English-native.** The Indic index
+  (`metadata_128`) contains `text_translated` — Hindi and Marathi passages. English
+  questions are served from the separate `english_256` index when it is available.
+
+- **Voice is limited to 30 seconds.** The Sarvam API rejects audio longer than
+  30 seconds.
+
+- **LLM generation is optional and not configured by default.** Without a LLM key,
+  `ANSWER_MODE=direct` is enforced and only extractive answers are produced.
+
+---
+
+## Troubleshooting
+
+### Backend does not start / index unavailable
+
+```
+"status": "unready"   # from GET /health
+```
+
+- Check that `INDEX_DOWNLOAD_URL` and `INDEX_SHA256` are set in the Render
+  environment (or that `data/index/full/metadata_128/` exists locally).
+- On Render, monitor logs for `INDEX_DOWNLOAD:` and `LIFESPAN: READY` lines.
+- `GET /diag/health` responds immediately and shows `"retrieval": "unavailable"`
+  until the index finishes loading.
+
+### Voice button is greyed out / disabled
+
+- `SARVAM_API_KEY` is not set; check `/health` → `stt_configured: false`.
+
+### STT returns an error
+
+- Audio over 30 seconds is rejected by the Sarvam API.
+- Unsupported audio formats return a 4xx from Sarvam; the backend translates this
+  to `HTTP 400`. The UI converts audio to 16 kHz mono WAV before sending.
+
+### ONNX Runtime crash (`SIGILL` / `Illegal instruction`)
+
+- The `int8_x86` variant uses AVX-512 VNNI instructions not available on all CPUs.
+  Set `E5_VARIANT=int8_arm` (ARM) or `E5_VARIANT=fp32` (safe on any x86-64).
+- `GET /diag/imports` tests each native package in a subprocess to catch this
+  before it kills the main process.
+
+### Dense retrieval not activating
+
+- Set `ENABLE_DENSE_RETRIEVAL=true`. Verify with `GET /diag/embedding` →
+  `"available": true`. On Render Free this will likely OOM; use locally or on a
+  larger instance.
+
+### "Knowledge base index is currently loading or unavailable" on `/ask`
+
+- The index has not finished loading yet (cold start). Retry after a few seconds.
+- If it persists, the index download may have failed (check `INDEX_SHA256` matches
+  the actual file).
+
+### `/benchmark` button always fails
+
+- This endpoint is not implemented. Use `python -m bench.fastpath --tag full` locally.
+
+---
+
+## Security
+
+- **API keys are read from environment variables** (`SARVAM_API_KEY`, LLM keys,
+  `HF_TOKEN`). They are never committed to the repository. `.env` is in `.gitignore`.
+- **Uploaded audio** is read into memory, transcribed, and discarded. No audio is
+  written to disk.
+- **Question length** is capped at 1000 characters by the Pydantic model and at
+  512 characters inside the harness (the 512-char cap bounds embedding latency on
+  pathologically long machine-translation artifacts).
+- **Retrieved answers** are extractive spans from the indexed corpus. The system
+  never invents facts; it abstains when the corpus does not cover the query.
+- **Source link** in the UI opens `https://github.com/serionmon/hhwork` in a new
+  tab — no proxying or credential forwarding.
+
+---
+
+## License
+
+No license file is present in this repository.
