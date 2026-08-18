@@ -77,32 +77,45 @@ def _percentiles(values: list[float]) -> dict[str, float]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t0 = time.perf_counter()
+    print("=== FASTAPI LIFESPAN STARTING ===", flush=True)
     threads = int(os.getenv("ORT_THREADS", "0"))
-    embedder = Embedder(EmbedderConfig(threads=threads))
 
-    # Load every index once; configurations below are views over these objects.
+    embedder = None
+    if os.getenv("SKIP_INIT_EMBEDDER") != "1":
+        try:
+            print("LIFESPAN: CREATING EMBEDDER", flush=True)
+            embedder = Embedder(EmbedderConfig(threads=threads))
+            print("LIFESPAN: EMBEDDER CREATED OK", flush=True)
+        except Exception as exc:
+            print(f"LIFESPAN WARNING: Embedder init failed/deferred: {exc}", flush=True)
+    else:
+        print("LIFESPAN: SKIP_INIT_EMBEDDER=1 set, deferring Embedder creation", flush=True)
+
     indexes: dict[str, ChunkIndex] = {}
-    for name in [*COMPARE, ENGLISH_INDEX]:
-        if (INDEX_ROOT / name / "hnsw.bin").exists():
-            indexes[name] = ChunkIndex.load(INDEX_ROOT, name)
-    if not indexes:
-        raise RuntimeError(f"no indexes found under {INDEX_ROOT}")
+    if INDEX_ROOT.exists():
+        for name in [*COMPARE, ENGLISH_INDEX]:
+            if (INDEX_ROOT / name / "hnsw.bin").exists():
+                indexes[name] = ChunkIndex.load(INDEX_ROOT, name)
 
-    serve_names = [n for n in SERVE if n in indexes] or list(indexes)[:1]
+    serve_names = [n for n in SERVE if n in indexes] or (list(indexes)[:1] if indexes else [])
     english = (
         AdaptiveRetriever({ENGLISH_INDEX: indexes[ENGLISH_INDEX]})
         if ENGLISH_INDEX in indexes else None
     )
-    harness = RAGHarness(
-        INDEX_ROOT,
-        embedder=embedder,
-        retriever=AdaptiveRetriever({n: indexes[n] for n in serve_names}),
-        # Tunable per deployment: context width trades generation latency against
-        # the chance the answer is in the window at all. Measured both ways below.
-        context_passages=int(os.getenv("CONTEXT_PASSAGES", "4")),
-        english_retriever=english,
-    )
-    harness.warm()
+
+    harness = None
+    if indexes and embedder:
+        harness = RAGHarness(
+            INDEX_ROOT,
+            embedder=embedder,
+            retriever=AdaptiveRetriever({n: indexes[n] for n in serve_names}),
+            context_passages=int(os.getenv("CONTEXT_PASSAGES", "4")),
+            english_retriever=english,
+        )
+        try:
+            harness.warm()
+        except Exception as exc:
+            print(f"LIFESPAN WARNING: harness warm failed: {exc}", flush=True)
 
     STATE.update(
         embedder=embedder,
@@ -110,13 +123,13 @@ async def lifespan(app: FastAPI):
         harness=harness,
         serve_names=serve_names,
         stt=SarvamSTT(),
-        # Held for /benchmark so it measures the pipeline, not disk reads.
-        sample_queries=_load_sample_queries(),
+        sample_queries=[],
         started_ms=round((time.perf_counter() - t0) * 1000, 1),
     )
     print(
         f"ready in {STATE['started_ms']}ms | serving {serve_names} | "
-        f"{sum(len(i) for i in indexes.values()):,} chunks across {len(indexes)} indexes"
+        f"{sum(len(i) for i in indexes.values()):,} chunks across {len(indexes)} indexes",
+        flush=True
     )
     yield
     STATE.get("stt") and STATE["stt"].close()
@@ -141,6 +154,45 @@ def _load_sample_queries(limit: int = 600) -> list[str]:
 
 
 app = FastAPI(title="Voice RAG — HH Goa Task 2", version="1.0", lifespan=lifespan)
+
+
+@app.get("/diag/ort")
+def diag_ort():
+    import sys
+    res = {
+        "python_version": sys.version,
+        "configured_provider": os.getenv("ORT_PROVIDERS"),
+        "e5_variant": os.getenv("E5_VARIANT"),
+        "ort_version": None,
+        "ort_import_ok": False,
+        "session_created": False,
+        "inference_ok": False,
+        "error": None
+    }
+    try:
+        print("DIAG: PRE_ORT_IMPORT", flush=True)
+        import onnxruntime as ort
+        print("DIAG: POST_ORT_IMPORT", flush=True)
+        res["ort_version"] = getattr(ort, "__version__", "unknown")
+        res["ort_import_ok"] = True
+
+        print("DIAG: PRE_SESSION_CREATE", flush=True)
+        threads = int(os.getenv("ORT_THREADS", "0"))
+        e = Embedder(EmbedderConfig(threads=threads))
+        print("DIAG: POST_SESSION_CREATE", flush=True)
+        res["session_created"] = True
+        res["selected_provider"] = e.provider
+        res["selected_variant"] = e.variant
+
+        print("DIAG: PRE_INFERENCE", flush=True)
+        vec = e.encode_query("test query")
+        print("DIAG: POST_INFERENCE", flush=True)
+        res["inference_ok"] = True
+        res["vector_shape"] = list(vec.shape)
+    except Exception as exc:
+        print(f"DIAG_ERROR: {exc}", flush=True)
+        res["error"] = str(exc)
+    return res
 
 
 @app.exception_handler(HTTPException)

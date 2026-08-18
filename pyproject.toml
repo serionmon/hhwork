@@ -10,7 +10,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pyarrow>=18.0",
     "huggingface-hub>=0.26",
-    "onnxruntime>=1.20",
+    "onnxruntime>=1.20,<=1.27.1",
     "tokenizers>=0.20",
     "hnswlib>=0.8",
     "bm25s>=0.2",

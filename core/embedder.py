@@ -26,7 +26,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+print("PRE_ORT_IMPORT", flush=True)
 import onnxruntime as ort
+print("POST_ORT_IMPORT", flush=True)
+print("ORT_VERSION:", getattr(ort, "__version__", "unknown"), flush=True)
+print("PRE_ORT_PROVIDER_CHECK", flush=True)
+print("CONFIGURED_PROVIDER:", os.getenv("ORT_PROVIDERS", "CPUExecutionProvider"), flush=True)
+
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
@@ -99,17 +105,20 @@ class Embedder:
             so.intra_op_num_threads = self.cfg.threads
 
         self.providers = available_providers()
+        print("PRE_SESSION_CREATE", flush=True)
         try:
             self.session = ort.InferenceSession(model_path, so, providers=self.providers)
+            print("POST_SESSION_CREATE", flush=True)
         except Exception as err:
             if variant != "fp32":
-                print(f"Warning: failed to load model variant {variant} ({err}), falling back to fp32")
+                print(f"Warning: failed to load model variant {variant} ({err}), falling back to fp32", flush=True)
                 self.variant = "fp32"
                 repo_fb, fname_fb = VARIANTS["fp32"]
                 model_path_fb = hf_hub_download(
                     repo_fb, fname_fb, cache_dir=str(cache_dir) if cache_dir else None
                 )
                 self.session = ort.InferenceSession(model_path_fb, so, providers=self.providers)
+                print("POST_SESSION_CREATE_FALLBACK", flush=True)
             else:
                 raise
 
@@ -117,13 +126,12 @@ class Embedder:
         self._input_names = {i.name for i in self.session.get_inputs()}
 
         import sys
-        print("=== ONNX Runtime Startup Diagnostic ===")
-        print(f"  Python version      : {sys.version.split()[0]}")
-        print(f"  ONNX Runtime version: {ort.__version__}")
-        print(f"  Available providers : {ort.get_available_providers()}")
-        print(f"  Selected provider   : {self.provider}")
-        print(f"  Selected variant    : {self.variant}")
-        print("=======================================")
+        print("=== ONNX Runtime Startup Diagnostic ===", flush=True)
+        print(f"  Python version      : {sys.version.split()[0]}", flush=True)
+        print(f"  ONNX Runtime version: {getattr(ort, '__version__', 'unknown')}", flush=True)
+        print(f"  Selected provider   : {self.provider}", flush=True)
+        print(f"  Selected variant    : {self.variant}", flush=True)
+        print("=======================================", flush=True)
 
         # On GPU the batch should be far larger: the bottleneck moves from
         # compute to kernel-launch overhead, and 64 leaves the device idle.
