@@ -192,7 +192,7 @@ class ChunkIndex:
         )
 
     @classmethod
-    def load(cls, root: Path, strategy: str, ef_search: int = 96) -> ChunkIndex:
+    def load(cls, root: Path, strategy: str, ef_search: int = 96, load_hnsw: bool = False) -> ChunkIndex:
         import bm25s
         try:
             import hnswlib
@@ -210,7 +210,7 @@ class ChunkIndex:
         ix.query_types = meta["query_types"]
         ix.langs = meta["langs"]
 
-        if hnswlib is not None and (d / "hnsw.bin").exists():
+        if load_hnsw and hnswlib is not None and (d / "hnsw.bin").exists():
             try:
                 ix.hnsw = hnswlib.Index(space="ip", dim=DIM)
                 ix.hnsw.load_index(str(d / "hnsw.bin"), max_elements=len(ix.chunk_ids))

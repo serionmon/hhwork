@@ -254,3 +254,47 @@ def test_sparse_retrieval_fallback_without_onnx():
         assert res.answer == "Python is popular."
         assert res.answer_source == "extractive"
         assert res.decision == Decision.ALLOW.value
+
+
+def test_diag_memory_endpoint(client):
+    """Verify GET /diag/memory returns process memory status and configuration flags."""
+    resp = client.get("/diag/memory")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["answer_mode"] == "direct"
+    assert data["dense_retrieval_enabled"] is False
+    assert data["embedder_initialized"] is False
+    assert "pid" in data
+    assert "rss_mb" in data
+
+
+def test_dense_retrieval_disabled_by_default(monkeypatch):
+    """Verify ENABLE_DENSE_RETRIEVAL defaults to false."""
+    monkeypatch.delenv("ENABLE_DENSE_RETRIEVAL", raising=False)
+    enabled = os.getenv("ENABLE_DENSE_RETRIEVAL", "false").lower() == "true"
+    assert enabled is False
+
+
+def test_chunk_index_load_does_not_initialize_hnsw_by_default(tmp_path):
+    """Verify ChunkIndex.load with load_hnsw=False skips HNSW index creation."""
+    from core.index import ChunkIndex
+    import pickle
+
+    strategy = "test_strat"
+    d = tmp_path / strategy
+    d.mkdir(parents=True)
+    with (d / "meta.pkl").open("wb") as f:
+        pickle.dump({
+            "strategy": strategy,
+            "chunk_ids": ["c1"],
+            "passage_ids": ["p1"],
+            "texts": ["test text"],
+            "query_types": ["DESC"],
+            "langs": ["en"]
+        }, f)
+
+    ix = ChunkIndex.load(tmp_path, strategy, load_hnsw=False)
+    assert ix.strategy == strategy
+    assert len(ix.chunk_ids) == 1
+    assert ix.hnsw is None  # HNSW is skipped in direct mode

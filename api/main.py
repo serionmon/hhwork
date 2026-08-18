@@ -56,34 +56,36 @@ def _percentiles(values: list[float]) -> dict[str, float]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     t0 = time.perf_counter()
-    print("LIFESPAN: Starting deferred background initialization", flush=True)
+    print("LIFESPAN: START", flush=True)
 
-    from core.embedder import Embedder, EmbedderConfig
-    from core.harness import RAGHarness
-    from core.index import ChunkIndex
-    from core.retriever import AdaptiveRetriever
-
-    threads = int(os.getenv("ORT_THREADS", "0"))
-
+    enable_dense = os.getenv("ENABLE_DENSE_RETRIEVAL", "false").lower() == "true"
     embedder = None
-    if os.getenv("SKIP_INIT_EMBEDDER") != "1":
+
+    if enable_dense:
+        print("LIFESPAN: DENSE_RETRIEVAL_ENABLED - Creating Embedder", flush=True)
         try:
-            print("LIFESPAN: CREATING EMBEDDER", flush=True)
+            from core.embedder import Embedder, EmbedderConfig
+            threads = int(os.getenv("ORT_THREADS", "0"))
             embedder = Embedder(EmbedderConfig(threads=threads))
-            print("LIFESPAN: EMBEDDER CREATED OK", flush=True)
         except Exception as exc:
-            print(f"LIFESPAN WARNING: Embedder init deferred/failed: {exc}", flush=True)
+            print(f"LIFESPAN WARNING: Embedder creation failed: {exc}", flush=True)
     else:
-        print("LIFESPAN: SKIP_INIT_EMBEDDER=1 set, deferring Embedder creation", flush=True)
+        print("LIFESPAN: EMBEDDER_DISABLED", flush=True)
 
     indexes: dict[str, ChunkIndex] = {}
     if INDEX_ROOT.exists():
+        print("LIFESPAN: LOADING_DIRECT_INDEX", flush=True)
+        from core.index import ChunkIndex
         for name in [*COMPARE, ENGLISH_INDEX]:
             if (INDEX_ROOT / name / "meta.pkl").exists() or (INDEX_ROOT / name / "hnsw.bin").exists():
                 try:
-                    indexes[name] = ChunkIndex.load(INDEX_ROOT, name)
+                    indexes[name] = ChunkIndex.load(INDEX_ROOT, name, load_hnsw=enable_dense)
                 except Exception as exc:
                     print(f"LIFESPAN WARNING: Index {name} load failed: {exc}", flush=True)
+        print("LIFESPAN: DIRECT_INDEX_LOADED", flush=True)
+
+    from core.harness import RAGHarness
+    from core.retriever import AdaptiveRetriever
 
     serve_names = [n for n in SERVE if n in indexes] or (list(indexes)[:1] if indexes else [])
     english = (
@@ -100,11 +102,6 @@ async def lifespan(app: FastAPI):
             context_passages=int(os.getenv("CONTEXT_PASSAGES", "4")),
             english_retriever=english,
         )
-        if embedder and getattr(embedder, "is_available", lambda: False)():
-            try:
-                harness.warm()
-            except Exception as exc:
-                print(f"LIFESPAN WARNING: harness warm failed: {exc}", flush=True)
 
     STATE.update(
         embedder=embedder,
@@ -115,6 +112,7 @@ async def lifespan(app: FastAPI):
         sample_queries=[],
         started_ms=round((time.perf_counter() - t0) * 1000, 1),
     )
+    print("LIFESPAN: READY", flush=True)
     print(
         f"ready in {STATE['started_ms']}ms | serving {serve_names} | "
         f"{sum(len(i) for i in indexes.values()):,} chunks across {len(indexes)} indexes",
@@ -135,13 +133,46 @@ def diag_health():
     indexes = STATE.get("indexes")
     embedder = STATE.get("embedder")
     embed_avail = embedder.is_available() if embedder is not None else False
+    enable_dense = os.getenv("ENABLE_DENSE_RETRIEVAL", "false").lower() == "true"
     return {
         "status": "ok",
         "pure_python": True,
         "retrieval": "available" if indexes else "unavailable",
         "embedding_runtime": "available" if embed_avail else ("unavailable" if embedder else "not_initialized"),
+        "dense_retrieval_enabled": enable_dense,
         "index": "available" if indexes else "unavailable",
         "llm_required": False
+    }
+
+
+@app.get("/diag/memory")
+def diag_memory():
+    pid = os.getpid()
+    rss_mb = 0.0
+
+    try:
+        if os.path.exists("/proc/self/statm"):
+            with open("/proc/self/statm", "r") as f:
+                parts = f.read().split()
+                if len(parts) >= 2:
+                    pages = int(parts[1])
+                    rss_mb = round((pages * 4096) / (1024 * 1024), 2)
+    except Exception:
+        pass
+
+    embedder = STATE.get("embedder")
+    embed_avail = embedder.is_available() if embedder is not None else False
+    enable_dense = os.getenv("ENABLE_DENSE_RETRIEVAL", "false").lower() == "true"
+    mode = os.getenv("ANSWER_MODE", "direct").lower()
+
+    return {
+        "status": "ok",
+        "pid": pid,
+        "rss_mb": rss_mb,
+        "answer_mode": mode,
+        "embedder_initialized": embed_avail,
+        "dense_retrieval_enabled": enable_dense,
+        "indexes_loaded": len(STATE.get("indexes", {})),
     }
 
 
