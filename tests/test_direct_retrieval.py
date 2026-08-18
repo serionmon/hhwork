@@ -205,12 +205,52 @@ def test_empty_and_malformed_queries(client):
     assert resp.status_code == 422
 
 
-def test_unhandled_exception_returns_controlled_json(client):
+def test_unhandled_exception_returns_controlled_json():
     """Test that unexpected server exceptions return controlled JSON error without stack trace."""
+    test_client = TestClient(app, raise_server_exceptions=False)
     with patch.dict("api.main.STATE", {"harness": MagicMock(answer=MagicMock(side_effect=RuntimeError("DB exploded")))}):
-        resp = client.post("/ask", json={"question": "Test query"})
+        resp = test_client.post("/ask", json={"question": "Test query"})
         assert resp.status_code == 500
         data = resp.json()
         assert data["success"] is False
         assert data["error"]["code"] == "INTERNAL_SERVER_ERROR"
         assert "An unexpected error occurred" in data["error"]["message"]
+
+
+def test_diag_health_without_onnx(client):
+    """Verify GET /diag/health returns JSON without calling ONNX Runtime."""
+    resp = client.get("/diag/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["llm_required"] is False
+    assert "embedding_runtime" in data
+
+
+def test_sparse_retrieval_fallback_without_onnx():
+    """Verify direct retrieval works with BM25 fallback when embedder is unavailable."""
+    mock_retriever = MagicMock()
+    mock_retriever.search_sparse.return_value = MagicMock(
+        hits=[MagicMock(unit_id="doc_bm25", text="Python is popular.", score=1.5, contributors={"metadata_128": 0})],
+        provenance=lambda: {"metadata_128": 1}
+    )
+
+    with patch("core.harness.extract_answer") as mock_extract, \
+         patch("core.harness.check_input") as mock_check_in, \
+         patch("core.harness.check_output") as mock_check_out:
+
+        mock_check_in.return_value = MagicMock(blocked=False, decision=Decision.ALLOW)
+        mock_check_out.return_value = MagicMock(blocked=False, grounding=0.85)
+        mock_extract.return_value = MagicMock(text="Python is popular.", support=0.85)
+
+        harness = RAGHarness(
+            index_root=MagicMock(),
+            embedder=None,  # No ONNX embedder
+            retriever=mock_retriever,
+            llm=None
+        )
+
+        res = harness.answer("Tell me about Python", generate=False)
+        assert res.answer == "Python is popular."
+        assert res.answer_source == "extractive"
+        assert res.decision == Decision.ALLOW.value

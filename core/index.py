@@ -17,7 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import bm25s
-import hnswlib
+try:
+    import hnswlib
+except ImportError:
+    hnswlib = None
 import numpy as np
 
 from core.text import BM25_TOKEN_PATTERN

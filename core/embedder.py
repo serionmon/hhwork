@@ -15,26 +15,17 @@ Model variants -- pick by target architecture:
   official fp32   intfloat/multilingual-e5-small : onnx/model.onnx
   official int8   intfloat/multilingual-e5-small : onnx/model_qint8_avx512_vnni.onnx  (x86 only)
   generic int8    Xenova/multilingual-e5-small   : onnx/model_int8.onnx               (ARM-safe)
-
-The avx512_vnni build is tuned for x86; on Graviton use the Xenova int8.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-print("PRE_ORT_IMPORT", flush=True)
-import onnxruntime as ort
-print("POST_ORT_IMPORT", flush=True)
-print("ORT_VERSION:", getattr(ort, "__version__", "unknown"), flush=True)
-print("PRE_ORT_PROVIDER_CHECK", flush=True)
-print("CONFIGURED_PROVIDER:", os.getenv("ORT_PROVIDERS", "CPUExecutionProvider"), flush=True)
-
-from huggingface_hub import hf_hub_download
-from tokenizers import Tokenizer
 
 DIM = 384
 MAX_LEN = 512
@@ -60,17 +51,52 @@ def available_providers() -> list[str]:
 
 
 def default_variant() -> str:
-    """Pick the ONNX build that suits the execution provider.
-
-    Defaults to 'int8_arm' (Xenova/multilingual-e5-small model_int8.onnx) which is a generic
-    8-bit quantized ONNX model compatible with all x86 and ARM CPUs without requiring
-    AVX-512 VNNI hardware extensions.
-    """
+    """Pick the ONNX build that suits the execution provider."""
     if v := os.getenv("E5_VARIANT"):
         return v
     if "CUDAExecutionProvider" in available_providers():
         return "fp32"
     return "int8_arm"
+
+
+def check_ort_compatibility() -> bool:
+    """Run an isolated subprocess probe to verify ONNX Runtime compatibility on this host.
+
+    Prevents SIGILL (Exit status 132) hardware instruction traps from crashing the main process.
+    """
+    if os.getenv("DISABLE_ONNX") == "1":
+        print("[Embedder] DISABLE_ONNX=1 set; skipping ONNX Runtime initialization.", flush=True)
+        return False
+
+    probe_code = (
+        "import os, sys\n"
+        "try:\n"
+        "    import onnxruntime as ort\n"
+        "    so = ort.SessionOptions()\n"
+        "    p = [os.getenv('ORT_PROVIDERS', 'CPUExecutionProvider')]\n"
+        "    print('ORT_PROBE_OK', flush=True)\n"
+        "except Exception as e:\n"
+        "    print(f'ORT_PROBE_FAIL:{e}', flush=True)\n"
+        "    sys.exit(1)\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", probe_code],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0 and "ORT_PROBE_OK" in proc.stdout:
+            return True
+        print(
+            f"[Embedder] ONNX probe failed (returncode {proc.returncode}). "
+            f"Stderr: {proc.stderr.strip()} Stdout: {proc.stdout.strip()}",
+            flush=True,
+        )
+        return False
+    except Exception as err:
+        print(f"[Embedder] ONNX probe exception: {err}", flush=True)
+        return False
 
 
 @dataclass(slots=True)
@@ -84,11 +110,24 @@ class EmbedderConfig:
 class Embedder:
     def __init__(self, cfg: EmbedderConfig | None = None, cache_dir: Path | None = None):
         self.cfg = cfg or EmbedderConfig()
-        variant = self.cfg.variant or default_variant()
-        if variant not in VARIANTS:
-            raise ValueError(f"unknown variant {variant!r}; pick from {list(VARIANTS)}")
-        repo, fname = VARIANTS[variant]
-        self.variant = variant
+        self._available = check_ort_compatibility()
+        self.session = None
+        self.tokenizer = None
+        self.provider = "CPUExecutionProvider"
+        self.variant = self.cfg.variant or default_variant()
+
+        if not self._available:
+            print("[Embedder] ONNX Runtime unavailable or disabled on this host. Using pure Python BM25 mode.", flush=True)
+            return
+
+        # Lazy import of ONNX & HuggingFace tokenizers inside instance initialization
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        if self.variant not in VARIANTS:
+            raise ValueError(f"unknown variant {self.variant!r}; pick from {list(VARIANTS)}")
+        repo, fname = VARIANTS[self.variant]
 
         model_path = hf_hub_download(repo, fname, cache_dir=str(cache_dir) if cache_dir else None)
         tok_path = hf_hub_download(
@@ -105,48 +144,48 @@ class Embedder:
             so.intra_op_num_threads = self.cfg.threads
 
         self.providers = available_providers()
-        print("PRE_SESSION_CREATE", flush=True)
         try:
             self.session = ort.InferenceSession(model_path, so, providers=self.providers)
-            print("POST_SESSION_CREATE", flush=True)
         except Exception as err:
-            if variant != "fp32":
-                print(f"Warning: failed to load model variant {variant} ({err}), falling back to fp32", flush=True)
+            if self.variant != "fp32":
+                print(f"Warning: failed to load model variant {self.variant} ({err}), falling back to fp32", flush=True)
                 self.variant = "fp32"
                 repo_fb, fname_fb = VARIANTS["fp32"]
                 model_path_fb = hf_hub_download(
                     repo_fb, fname_fb, cache_dir=str(cache_dir) if cache_dir else None
                 )
                 self.session = ort.InferenceSession(model_path_fb, so, providers=self.providers)
-                print("POST_SESSION_CREATE_FALLBACK", flush=True)
             else:
+                self._available = False
                 raise
 
         self.provider = self.session.get_providers()[0]
         self._input_names = {i.name for i in self.session.get_inputs()}
 
-        import sys
-        print("=== ONNX Runtime Startup Diagnostic ===", flush=True)
+        print("=== ONNX Runtime Diagnostic ===", flush=True)
         print(f"  Python version      : {sys.version.split()[0]}", flush=True)
         print(f"  ONNX Runtime version: {getattr(ort, '__version__', 'unknown')}", flush=True)
         print(f"  Selected provider   : {self.provider}", flush=True)
         print(f"  Selected variant    : {self.variant}", flush=True)
-        print("=======================================", flush=True)
+        print("================================", flush=True)
 
-        # On GPU the batch should be far larger: the bottleneck moves from
-        # compute to kernel-launch overhead, and 64 leaves the device idle.
         if "CUDA" in self.provider and cfg is None:
             self.cfg.batch_size = int(os.getenv("EMBED_BATCH", "256"))
+
+    def is_available(self) -> bool:
+        return self._available and self.session is not None
 
     # -- internals ---------------------------------------------------------
 
     def _forward(self, texts: list[str]) -> np.ndarray:
+        if not self.is_available():
+            return np.zeros((len(texts), DIM), dtype=np.float32)
+
         enc = self.tokenizer.encode_batch(texts)
         ids = np.array([e.ids for e in enc], dtype=np.int64)
         mask = np.array([e.attention_mask for e in enc], dtype=np.int64)
 
         feeds = {"input_ids": ids, "attention_mask": mask}
-        # XLM-R has no token_type_ids, but some exports still declare it.
         if "token_type_ids" in self._input_names:
             feeds["token_type_ids"] = np.zeros_like(ids)
         feeds = {k: v for k, v in feeds.items() if k in self._input_names}
@@ -159,27 +198,10 @@ class Embedder:
         return (pooled / np.clip(norms, 1e-12, None)).astype(np.float32)
 
     def _encode(self, texts: list[str], prefix: str, batch_size: int | None = None) -> np.ndarray:
-        """Batch with length bucketing, then restore the caller's order.
-
-        The tokenizer pads each batch to its longest member. MSMARCO passages
-        are mostly 60-80 tokens but chunks can reach 256, so an unsorted batch
-        of 64 lets a single long chunk force 63 others to pad up to it -- most
-        of the compute then goes into padding. Sorting by length first keeps
-        each batch uniform and cuts that waste substantially.
-
-        Character count is used as the length proxy: it correlates well enough
-        with token count and costs nothing, whereas tokenising twice would
-        defeat the purpose.
-
-        `batch_size` overrides the configured size for one call. Bucketing only
-        helps when a call spans several batches: the extractive path embeds ~10
-        sentences, which is one batch of 64, so every short sentence pads up to
-        the longest and the sort does nothing. A smaller batch there restores
-        the effect. Doing so cannot change the vectors -- mean pooling is taken
-        over the attention mask, so padding is excluded from the result.
-        """
         if not texts:
             return np.zeros((0, DIM), dtype=np.float32)
+        if not self.is_available():
+            return np.zeros((len(texts), DIM), dtype=np.float32)
 
         prefixed = [prefix + t for t in texts]
         order = sorted(range(len(prefixed)), key=lambda i: len(prefixed[i]))
@@ -194,37 +216,17 @@ class Embedder:
     # -- public ------------------------------------------------------------
 
     def encode_query(self, text: str) -> np.ndarray:
-        """Single query -> (DIM,) normalised vector. This runs in the hot path."""
+        """Single query -> (DIM,) normalised vector."""
+        if not self.is_available():
+            return np.zeros((DIM,), dtype=np.float32)
         return self._encode([text], "query: ")[0]
 
     def encode_queries(self, texts: list[str]) -> np.ndarray:
+        if not self.is_available():
+            return np.zeros((len(texts), DIM), dtype=np.float32)
         return self._encode(texts, "query: ")
 
     def encode_passages(self, texts: list[str], batch_size: int | None = None) -> np.ndarray:
+        if not self.is_available():
+            return np.zeros((len(texts), DIM), dtype=np.float32)
         return self._encode(texts, "passage: ", batch_size)
-
-
-if __name__ == "__main__":
-    import time
-
-    e = Embedder()
-    print(f"variant={e.variant}  provider={e.provider}  batch={e.cfg.batch_size}")
-    print(f"  available: {ort.get_available_providers()}")
-
-    q = "ताजमहल कहाँ स्थित है?"
-    docs = [
-        "ताजमहल आगरा में स्थित है। इसे शाहजहाँ ने बनवाया था।",
-        "The Taj Mahal is located in Agra, India.",
-        "पिज़्ज़ा बनाने की विधि बहुत सरल है।",
-    ]
-    qv = e.encode_query(q)
-    dv = e.encode_passages(docs)
-    print(f"shapes: query={qv.shape} docs={dv.shape}  |q|={np.linalg.norm(qv):.4f}")
-    print("\ncosine similarity (cross-lingual sanity check):")
-    for d, s in zip(docs, dv @ qv, strict=True):
-        print(f"  {s:+.4f}  {d[:60]}")
-
-    t0 = time.perf_counter()
-    for _ in range(20):
-        e.encode_query(q)
-    print(f"\nsingle-query encode: {(time.perf_counter() - t0) / 20 * 1000:.2f} ms")

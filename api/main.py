@@ -156,6 +156,34 @@ def _load_sample_queries(limit: int = 600) -> list[str]:
 app = FastAPI(title="Voice RAG — HH Goa Task 2", version="1.0", lifespan=lifespan)
 
 
+@app.get("/diag/health")
+def diag_health():
+    indexes = STATE.get("indexes")
+    embedder = STATE.get("embedder")
+    embed_avail = embedder.is_available() if embedder is not None else False
+    return {
+        "status": "ok",
+        "retrieval": "available" if indexes else "unavailable",
+        "embedding_runtime": "available" if embed_avail else ("unavailable" if embedder else "not_initialized"),
+        "index": "available" if indexes else "unavailable",
+        "llm_required": False
+    }
+
+
+@app.get("/diag/embedding")
+def diag_embedding():
+    embedder = STATE.get("embedder")
+    if embedder is None:
+        return {"available": False, "status": "not_initialized"}
+    avail = embedder.is_available()
+    return {
+        "available": avail,
+        "provider": getattr(embedder, "provider", None),
+        "variant": getattr(embedder, "variant", None),
+        "status": "available" if avail else "unavailable"
+    }
+
+
 @app.get("/diag/ort")
 def diag_ort():
     import sys

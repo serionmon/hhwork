@@ -236,5 +236,63 @@ class AdaptiveRetriever:
             total_ms=round((now - t_start) * 1000, 3),
         )
 
+    def search_sparse(self, query_text: str, k: int = 20, per_index_k: int = 30) -> RetrievalResult:
+        """Pure BM25 sparse retrieval across indexes with RRF rank fusion. Requires 0 dense embeddings."""
+        t_start = time.perf_counter()
+        per_index_ms: dict[str, float] = {}
+        scores: dict[str, float] = {}
+        contributors: dict[str, dict[str, int]] = {}
+        best: dict[str, Hit] = {}
+
+        for name, ix in self.indexes.items():
+            t0 = time.perf_counter()
+            sparse_tuples = ix.search_sparse(query_text, k=per_index_k)
+            per_index_ms[name] = round((time.perf_counter() - t0) * 1000, 3)
+
+            w = self.weights.get(name, 1.0)
+            seen_units: set[str] = set()
+            for rank, (idx_pos, score_val) in enumerate(sparse_tuples):
+                unit = ix.passage_ids[idx_pos]
+                if unit in seen_units:
+                    continue
+                seen_units.add(unit)
+
+                scores[unit] = scores.get(unit, 0.0) + w / (self.rrf_k + rank + 1)
+                contributors.setdefault(unit, {})[name] = rank
+                if unit not in best:
+                    best[unit] = Hit(
+                        chunk_id=ix.chunk_ids[idx_pos],
+                        passage_id=unit,
+                        text=ix.texts[idx_pos],
+                        score=score_val,
+                        rank=rank,
+                        query_type=ix.query_types[idx_pos],
+                        lang=ix.langs[idx_pos],
+                        source="sparse",
+                    )
+
+        t_fuse = time.perf_counter()
+        ordered = sorted(scores.items(), key=lambda kv: -kv[1])[:k]
+        fused = [
+            FusedHit(
+                unit_id=unit,
+                text=best[unit].text,
+                score=float(s),
+                rank=i,
+                query_type=best[unit].query_type,
+                lang=best[unit].lang,
+                contributors=contributors[unit],
+            )
+            for i, (unit, s) in enumerate(ordered)
+        ]
+        now = time.perf_counter()
+
+        return RetrievalResult(
+            hits=fused,
+            per_index_ms=per_index_ms,
+            fuse_ms=round((now - t_fuse) * 1000, 3),
+            total_ms=round((now - t_start) * 1000, 3),
+        )
+
     def __len__(self) -> int:
         return sum(len(ix) for ix in self.indexes.values())

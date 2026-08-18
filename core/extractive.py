@@ -227,21 +227,23 @@ def extract_answer(
         lex = lex_all
     t_pre = mark("prefilter", t_lex)
 
-    # Embedding pass over the surviving candidates. `sentences` itself is never
-    # truncated -- only the text handed to the encoder is -- so the returned span
-    # and its citation stay verbatim.
-    to_embed = sentences
-    if max_sentence_chars:
-        to_embed = [s[:max_sentence_chars] for s in sentences]
-    svecs = embedder.encode_passages(to_embed, batch_size=embed_batch)
-    t_embed = mark("embed_sentences", t_pre)
-    cos = svecs @ qvec  # both L2-normalised -> dot == cosine
-
-    # Cosine for e5 lives roughly in [0.7, 0.95] for related text, so rescale
-    # into [0,1] before blending -- otherwise the lexical term is swamped and
-    # every candidate looks equally good.
-    cos_n = np.clip((cos - 0.70) / 0.25, 0.0, 1.0)
-    scores = alpha * cos_n + (1.0 - alpha) * lex
+    # Embedding pass over surviving candidates if embedder is available; otherwise fallback to lexical scoring
+    if embedder is not None and getattr(embedder, "is_available", lambda: False)():
+        to_embed = sentences
+        if max_sentence_chars:
+            to_embed = [s[:max_sentence_chars] for s in sentences]
+        svecs = embedder.encode_passages(to_embed, batch_size=embed_batch)
+        t_embed = mark("embed_sentences", t_pre)
+        if qvec is not None and qvec.any():
+            cos = svecs @ qvec  # both L2-normalised -> dot == cosine
+            cos_n = np.clip((cos - 0.70) / 0.25, 0.0, 1.0)
+            scores = alpha * cos_n + (1.0 - alpha) * lex
+        else:
+            scores = lex
+    else:
+        # Pure lexical overlap fallback path (zero ONNX dependency)
+        t_embed = mark("lexical_fallback", t_pre)
+        scores = lex
 
     best = int(np.argmax(scores))
     span_idx = [best]

@@ -231,19 +231,25 @@ class RAGHarness:
         retriever = self.english_retriever if use_english else self.retriever
         r.route = "english" if use_english else "indic"
 
-        qvec = self.embedder.encode_query(question)
-        t2 = mark("embed_query", t1)
+        if self.embedder is not None and getattr(self.embedder, "is_available", lambda: False)():
+            qvec = self.embedder.encode_query(question)
+            t2 = mark("embed_query", t1)
+            retrieval = retriever.search(qvec, question, k=self.top_k)
+            t3 = mark("retrieve", t2)
+            extracted: ExtractiveAnswer = extract_answer(question, qvec, retrieval.hits, self.embedder)
+            t4 = mark("extract", t3)
+        else:
+            t2 = mark("embed_query_skipped", t1)
+            retrieval = retriever.search_sparse(question, k=self.top_k)
+            t3 = mark("retrieve_sparse", t2)
+            extracted: ExtractiveAnswer = extract_answer(question, None, retrieval.hits, None)
+            t4 = mark("extract_lexical", t3)
 
-        retrieval = retriever.search(qvec, question, k=self.top_k)
-        t3 = mark("retrieve", t2)
         r.retrieval_provenance = retrieval.provenance()
         r.sources = [
             Source(h.unit_id, h.text, round(h.score, 5), h.contributors)
             for h in retrieval.hits[: self.context_passages]
         ]
-
-        extracted: ExtractiveAnswer = extract_answer(question, qvec, retrieval.hits, self.embedder)
-        t4 = mark("extract", t3)
         r.extractive_answer = extracted.text
         r.support = round(extracted.support, 4)
 
