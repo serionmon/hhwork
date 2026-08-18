@@ -35,8 +35,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
-
 from core.index import ChunkIndex, Hit
 
 # Chosen by exhaustive ablation over all 7 subsets at full scale (eval/ablate_full.py,

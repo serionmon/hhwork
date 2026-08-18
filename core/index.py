@@ -16,13 +16,6 @@ import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
-import bm25s
-try:
-    import hnswlib
-except ImportError:
-    hnswlib = None
-import numpy as np
-
 from core.text import BM25_TOKEN_PATTERN
 
 DIM = 384
@@ -81,6 +74,13 @@ class ChunkIndex:
         `display_texts` defaults to the embedded text, which is correct for every
         strategy that does not rewrite it.
         """
+        import bm25s
+        try:
+            import hnswlib
+        except ImportError:
+            hnswlib = None
+        import numpy as np
+
         n = len(chunks)
         if vectors.shape != (n, DIM):
             raise ValueError(f"vectors {vectors.shape} != ({n}, {DIM})")
@@ -91,18 +91,13 @@ class ChunkIndex:
         self.query_types = [c["query_type"] for c in chunks]
         self.langs = [c["lang"] for c in chunks]
 
-        # Inner product == cosine because vectors are normalised.
-        self.hnsw = hnswlib.Index(space="ip", dim=DIM)
-        self.hnsw.init_index(max_elements=n, ef_construction=ef_construction, M=M)
-        self.hnsw.add_items(vectors, np.arange(n))
-        self.hnsw.set_ef(ef_search)
+        if hnswlib is not None:
+            self.hnsw = hnswlib.Index(space="ip", dim=DIM)
+            self.hnsw.init_index(max_elements=n, ef_construction=ef_construction, M=M)
+            self.hnsw.add_items(vectors, np.arange(n))
+            self.hnsw.set_ef(ef_search)
 
-        # BM25 runs on raw text. The metadata strategy prepends a type hint that
-        # helps the *embedding* but would pollute lexical matching, so prefer the
-        # untagged body when the caller supplies it.
         corpus = bm25_texts if bm25_texts is not None else self.texts
-        # bm25s defaults to token_pattern r"(?u)\b\w\w+\b", which shatters Devanagari
-        # at every matra -- the sparse index would hold consonant fragments.
         tokens = bm25s.tokenize(
             corpus, stopwords=None, show_progress=False, token_pattern=BM25_TOKEN_PATTERN
         )
@@ -111,12 +106,20 @@ class ChunkIndex:
 
     # -- search ------------------------------------------------------------
 
-    def search_dense(self, qvec: np.ndarray, k: int) -> list[tuple[int, float]]:
+    def search_dense(self, qvec, k: int) -> list[tuple[int, float]]:
+        try:
+            import hnswlib
+        except ImportError:
+            return []
+        if self.hnsw is None:
+            return []
         labels, dists = self.hnsw.knn_query(qvec.reshape(1, -1), k=min(k, len(self.chunk_ids)))
-        # hnswlib returns 1 - inner_product for the "ip" space.
         return [(int(i), 1.0 - float(d)) for i, d in zip(labels[0], dists[0], strict=True)]
 
     def search_sparse(self, query: str, k: int) -> list[tuple[int, float]]:
+        import bm25s
+        if self.bm25 is None:
+            return []
         tokens = bm25s.tokenize(
             [query], stopwords=None, show_progress=False, token_pattern=BM25_TOKEN_PATTERN
         )
@@ -125,18 +128,13 @@ class ChunkIndex:
 
     def search(
         self,
-        qvec: np.ndarray,
+        qvec,
         query_text: str,
         k: int = 50,
         *,
         rrf_k: int = 60,
         dense_only: bool = False,
     ) -> list[Hit]:
-        """Hybrid search with RRF fusion.
-
-        RRF scores by rank, not raw score, so BM25's unbounded scores and cosine's
-        [-1,1] never need calibrating against each other:  sum(1 / (rrf_k + rank)).
-        """
         dense = self.search_dense(qvec, k)
         if dense_only:
             fused = {i: s for i, s in dense}
@@ -169,10 +167,13 @@ class ChunkIndex:
     # -- persistence -------------------------------------------------------
 
     def save(self, root: Path) -> None:
+        import bm25s
         d = root / self.strategy
         d.mkdir(parents=True, exist_ok=True)
-        self.hnsw.save_index(str(d / "hnsw.bin"))
-        self.bm25.save(str(d / "bm25"))
+        if self.hnsw is not None:
+            self.hnsw.save_index(str(d / "hnsw.bin"))
+        if self.bm25 is not None:
+            self.bm25.save(str(d / "bm25"))
         with (d / "meta.pkl").open("wb") as f:
             pickle.dump(
                 {
@@ -192,6 +193,12 @@ class ChunkIndex:
 
     @classmethod
     def load(cls, root: Path, strategy: str, ef_search: int = 96) -> ChunkIndex:
+        import bm25s
+        try:
+            import hnswlib
+        except ImportError:
+            hnswlib = None
+
         d = root / strategy
         with (d / "meta.pkl").open("rb") as f:
             meta = pickle.load(f)
@@ -203,10 +210,20 @@ class ChunkIndex:
         ix.query_types = meta["query_types"]
         ix.langs = meta["langs"]
 
-        ix.hnsw = hnswlib.Index(space="ip", dim=DIM)
-        ix.hnsw.load_index(str(d / "hnsw.bin"), max_elements=len(ix.chunk_ids))
-        ix.hnsw.set_ef(ef_search)
-        ix.bm25 = bm25s.BM25.load(str(d / "bm25"))
+        if hnswlib is not None and (d / "hnsw.bin").exists():
+            try:
+                ix.hnsw = hnswlib.Index(space="ip", dim=DIM)
+                ix.hnsw.load_index(str(d / "hnsw.bin"), max_elements=len(ix.chunk_ids))
+                ix.hnsw.set_ef(ef_search)
+            except Exception as e:
+                print(f"[ChunkIndex] HNSW load skipped: {e}", flush=True)
+
+        if (d / "bm25").exists() or (d / "bm25.json").exists():
+            try:
+                ix.bm25 = bm25s.BM25.load(str(d / "bm25"))
+            except Exception as e:
+                print(f"[ChunkIndex] BM25 load skipped: {e}", flush=True)
+
         return ix
 
     def __len__(self) -> int:

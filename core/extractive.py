@@ -26,9 +26,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-import numpy as np
-
-from core.embedder import Embedder
 from core.text import overlap as lexical_overlap
 from ingest.chunkers import split_sentences
 
@@ -178,6 +175,7 @@ def extract_answer(
     `hits` is any sequence exposing .text and .passage_id (Hit or FusedHit).
     """
     t0 = time.perf_counter()
+    import numpy as np
     stage: dict[str, float] = {}
 
     def mark(name: str, since: float) -> float:
