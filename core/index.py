@@ -194,10 +194,21 @@ class ChunkIndex:
     @classmethod
     def load(cls, root: Path, strategy: str, ef_search: int = 96, load_hnsw: bool = False) -> ChunkIndex:
         import bm25s
-        try:
-            import hnswlib
-        except ImportError:
-            hnswlib = None
+
+        hnswlib = None
+        if load_hnsw:
+            try:
+                import hnswlib
+            except ImportError:
+                hnswlib = None
+            except Exception as exc:
+                # Some hnswlib wheels crash with SIGILL (illegal instruction)
+                # on hosts whose CPU lacks the AVX512 features the wheel was
+                # built with. That's a hard process kill, not a catchable
+                # Python exception -- so this except only catches import-time
+                # failures that *are* catchable (e.g. missing shared libs).
+                print(f"[ChunkIndex] hnswlib unavailable, dense retrieval disabled: {exc}", flush=True)
+                hnswlib = None
 
         d = root / strategy
         with (d / "meta.pkl").open("rb") as f:
