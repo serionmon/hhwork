@@ -30,8 +30,28 @@ import pickle
 import time
 from pathlib import Path
 
+import re
+
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data" if Path("/data").is_dir() else "./data"))
 VARIANT = "english_256"
+
+# Measured on the full corpus (199,668 English passages): 2 match, both the
+# same scraped JS console error duplicated across the hin/mar shards
+# ("TypeError: 'undefined' is not a function ... tag.js:3 ... The Oprah
+# Winfrey Show."). This is not indicative of broader corpus contamination --
+# 1,076 passages (0.54%) contain a URL and are legitimate citations/content,
+# so URLs are deliberately NOT filtered. Only the specific stack-trace/error
+# signature is, since that's what actually caused a bad answer in production:
+# "what is js" retrieved this passage on a literal token match against "js"
+# and scored a deceptively high lexical overlap.
+_JUNK_RE = re.compile(
+    r"TypeError|ReferenceError|SyntaxError|undefined is not|\.js:\d+|"
+    r"at Object\.|at Function\.|Uncaught "
+)
+
+
+def is_junk(text: str) -> bool:
+    return bool(_JUNK_RE.search(text))
 
 
 def load_english_passages() -> tuple[list[str], list[str], list[str], list[str]]:
@@ -41,6 +61,7 @@ def load_english_passages() -> tuple[list[str], list[str], list[str], list[str]]
     passage_ids: list[str] = []
     texts: list[str] = []
     query_types: list[str] = []
+    n_junk = 0
 
     for lang in ("hin", "mar"):
         p = DATA_ROOT / "raw" / f"{lang}_train_passages.jsonl"
@@ -57,6 +78,9 @@ def load_english_passages() -> tuple[list[str], list[str], list[str], list[str]]
                 text = (r.get("text_eng") or "").strip()
                 if not text:
                     continue
+                if is_junk(text):
+                    n_junk += 1
+                    continue
                 # Dedup by content hash -- English source is shared across hin/mar shards.
                 h = hashlib.blake2b(text.encode(), digest_size=16).digest()
                 if h in seen:
@@ -67,6 +91,9 @@ def load_english_passages() -> tuple[list[str], list[str], list[str], list[str]]
                 passage_ids.append(pid)
                 texts.append(text)
                 query_types.append(r.get("query_type", "DESCRIPTION"))
+
+    if n_junk:
+        print(f"  filtered {n_junk} junk passage(s) (scraper error text)")
 
     return chunk_ids, passage_ids, texts, query_types
 
