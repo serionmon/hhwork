@@ -61,7 +61,7 @@ body {
   background-color: var(--bg);
   color: var(--fg);
   font-family: var(--sans);
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -202,7 +202,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
 .brand-name {
   font-weight: 700;
   letter-spacing: -0.025em;
-  font-size: 17px;
+  font-size: 1.0625rem;
   color: var(--fg);
   display: flex;
   align-items: center;
@@ -210,7 +210,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
 }
 
 .brand-badge {
-  font-size: 9.5px;
+  font-size: 0.5938rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -232,7 +232,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
   align-items: center;
   gap: 8px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.02em;
   color: var(--fg-dim);
   text-decoration: none;
@@ -289,7 +289,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
   align-items: center;
   gap: 9px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--accent-cyan);
@@ -316,7 +316,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
 
 .hero-title {
   margin: 0 0 16px;
-  font-size: clamp(38px, 5.5vw, 62px);
+  font-size: clamp(2.375rem, 5.5vw, 3.875rem);
   font-weight: 700;
   letter-spacing: -0.035em;
   line-height: 1.1;
@@ -326,7 +326,7 @@ main, .topbar-wrap { position: relative; z-index: 2; }
 .hero-subtitle {
   max-width: 600px;
   margin: 0 auto 36px;
-  font-size: clamp(15.5px, 1.8vw, 18px);
+  font-size: clamp(0.9688rem, 1.8vw, 1.125rem);
   color: var(--fg-dim);
   line-height: 1.6;
   font-weight: 400;
@@ -348,7 +348,7 @@ body.answered .eyebrow {
 }
 
 body.answered .hero-title {
-  font-size: clamp(26px, 3.5vw, 36px);
+  font-size: clamp(1.625rem, 3.5vw, 2.25rem);
   margin-bottom: 10px;
 }
 
@@ -414,7 +414,7 @@ body.answered .samples:hover {
   outline: none;
   color: var(--fg);
   font-family: var(--sans);
-  font-size: 16px;
+  font-size: 1rem;
   padding: 14px 0;
   font-weight: 400;
   letter-spacing: -0.01em;
@@ -505,7 +505,7 @@ body.answered .samples:hover {
 .hint {
   margin-top: 14px;
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 0.8125rem;
   color: var(--fg-faint);
   min-height: 20px;
   letter-spacing: 0.01em;
@@ -536,7 +536,7 @@ body.answered .samples:hover {
 
 .sample {
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: 0.8125rem;
   border-radius: var(--radius-pill);
   padding: 8px 18px;
   cursor: pointer;
@@ -556,7 +556,7 @@ body.answered .samples:hover {
 
 .sample.ghost {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
   color: var(--abstain);
   border-style: dashed;
 }
@@ -605,7 +605,7 @@ body.answered .samples:hover {
 
 .tier {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
   letter-spacing: 0.02em;
   color: var(--fg-faint);
   display: inline-flex;
@@ -662,7 +662,7 @@ body.answered .samples:hover {
   cursor: pointer;
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: 0.8125rem;
   transition: all 0.2s var(--ease);
 }
 
@@ -678,7 +678,7 @@ body.answered .samples:hover {
 }
 
 .answer {
-  font-size: clamp(17px, 2.2vw, 20px);
+  font-size: clamp(1.0625rem, 2.2vw, 1.25rem);
   line-height: 1.65;
   color: var(--fg);
   font-weight: 400;
@@ -727,7 +727,7 @@ body.answered .samples:hover {
   justify-content: space-between;
   align-items: center;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--fg-dim);
 }
 
@@ -743,7 +743,7 @@ body.answered .samples:hover {
 
 .v {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   padding: 5px 12px;
   border-radius: var(--radius-pill);
   background: rgba(255, 255, 255, 0.03);
@@ -791,7 +791,7 @@ body.answered .samples:hover {
 .sources summary {
   padding: 12px 18px;
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: 0.7188rem;
   color: var(--fg-dim);
   cursor: pointer;
   user-select: none;
@@ -808,14 +808,14 @@ body.answered .samples:hover {
 .src {
   padding: 14px 18px;
   border-top: 1px solid var(--line-subtle);
-  font-size: 13.5px;
+  font-size: 0.8438rem;
   line-height: 1.6;
   color: var(--fg-dim);
 }
 
 .src .meta {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--fg-faint);
   margin-top: 6px;
 }
@@ -830,7 +830,7 @@ body.answered .samples:hover {
 
 .tag-un {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--abstain);
   margin-bottom: 8px;
   font-weight: 600;
@@ -838,7 +838,7 @@ body.answered .samples:hover {
 
 .caveat {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 0.6562rem;
   color: var(--fg-faint);
   margin-top: 8px;
 }
@@ -866,7 +866,7 @@ body.answered .samples:hover {
 }
 
 .tele b {
-  font-size: clamp(20px, 2.5vw, 24px);
+  font-size: clamp(1.25rem, 2.5vw, 1.5rem);
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--fg);
@@ -875,7 +875,7 @@ body.answered .samples:hover {
 
 .tele span {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--fg-faint);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -904,7 +904,7 @@ body.answered .samples:hover {
   gap: 8px;
   justify-content: center;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--fg-faint);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -937,7 +937,7 @@ body.answered .samples:hover {
 
 .act-num {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   color: var(--accent-cyan);
   letter-spacing: 0.1em;
   margin-bottom: 8px;
@@ -945,7 +945,7 @@ body.answered .samples:hover {
 }
 
 .act-head h2 {
-  font-size: clamp(24px, 3.5vw, 32px);
+  font-size: clamp(1.5rem, 3.5vw, 2rem);
   font-weight: 700;
   letter-spacing: -0.025em;
   margin: 0 0 8px;
@@ -954,7 +954,7 @@ body.answered .samples:hover {
 
 .act-head p {
   color: var(--fg-dim);
-  font-size: 15px;
+  font-size: 0.9375rem;
   margin: 0;
   max-width: 600px;
 }
@@ -969,7 +969,7 @@ body.answered .samples:hover {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   text-align: left;
 }
 
@@ -1001,7 +1001,7 @@ body.answered .samples:hover {
 }
 
 .tag {
-  font-size: 9px;
+  font-size: 0.5625rem;
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(56, 189, 248, 0.15);
@@ -1017,7 +1017,7 @@ body.answered .samples:hover {
   border: 1px dashed var(--line);
   color: var(--fg-dim);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 0.75rem;
   cursor: pointer;
   transition: all 0.2s var(--ease);
   margin-bottom: 16px;
@@ -1047,14 +1047,14 @@ body.answered .samples:hover {
 }
 
 .findings h3 {
-  font-size: 15px;
+  font-size: 0.9375rem;
   font-weight: 600;
   margin: 0 0 8px;
   color: var(--fg);
 }
 
 .findings p {
-  font-size: 13px;
+  font-size: 0.8125rem;
   line-height: 1.55;
   color: var(--fg-dim);
   margin: 0 0 16px;
@@ -1062,7 +1062,7 @@ body.answered .samples:hover {
 
 .findings code {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 0.6562rem;
   color: var(--accent-cyan);
   background: rgba(56, 189, 248, 0.08);
   padding: 4px 8px;
@@ -1086,7 +1086,7 @@ body.answered .samples:hover {
 
 .foot-brand p {
   margin: 4px 0 0;
-  font-size: 12.5px;
+  font-size: 0.7812rem;
   color: var(--fg-faint);
 }
 
@@ -1094,7 +1094,7 @@ body.answered .samples:hover {
   display: flex;
   gap: 16px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 0.6875rem;
   color: var(--fg-faint);
   flex-wrap: wrap;
 }
@@ -1160,7 +1160,7 @@ body.answered .samples:hover {
     padding: 4px 6px 4px 16px;
   }
   #q {
-    font-size: 15px;
+    font-size: 0.9375rem;
   }
   .glass-btn-circle {
     width: 38px;
