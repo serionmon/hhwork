@@ -169,7 +169,8 @@ class RAGHarness:
         else:
             try:
                 self.llm = LLMChain.from_env()
-            except Exception:
+            except Exception as exc:
+                print(f"[RAGHarness] LLM unavailable, generation disabled: {exc}", flush=True)
                 self.llm = None
         self.top_k = top_k
         self.context_passages = context_passages
