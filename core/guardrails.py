@@ -106,31 +106,27 @@ UNSAFE_PATTERNS: list[tuple[str, re.Pattern]] = [
 
 REFUSAL_TEXT = {
     "credential_solicitation": (
-        "मैं आपके व्यक्तिगत खाते या पासवर्ड की जानकारी नहीं दे सकता। "
         "I can't help with personal account credentials."
     ),
     "self_harm": (
-        "मैं इस विषय पर मदद नहीं कर सकता, लेकिन कृपया किसी से बात करें। "
-        "भारत में टेली-मानस हेल्पलाइन: 14416. "
-        "I can't help with this, but please reach out — Tele-MANAS: 14416."
+        "I can't help with this, but please reach out to someone who can — "
+        "Tele-MANAS (India): 14416, or a crisis line in your country."
     ),
     "weapons": (
-        "मैं इस बारे में जानकारी नहीं दे सकता। I can't provide information on this."
+        "I can't provide information on this."
     ),
     "prompt_injection": (
-        "मैं केवल उपलब्ध दस्तावेज़ों से प्रश्नों के उत्तर दे सकता हूँ। "
         "I can only answer questions from the indexed documents."
     ),
 }
 
 ABSTAIN_TEXT = (
-    "मेरे पास इसका उत्तर देने के लिए पर्याप्त जानकारी नहीं है। "
     "I don't have enough information in my sources to answer that."
 )
 
 GREETING_TEXT = (
-    "नमस्ते! मुझसे दस्तावेज़ों के बारे में कोई प्रश्न पूछिए। "
-    "Hello! Ask me a question about the indexed documents — try “भारत की राजधानी क्या है?”"
+    "Hello! Ask me a question about the indexed documents — "
+    "try \u201cWhat is the capital of India?\u201d"
 )
 
 # Greetings and other conversational openers are not questions, and retrieval
