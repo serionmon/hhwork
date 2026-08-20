@@ -467,6 +467,72 @@ def ask(req: AskRequest):
     return _answer_payload(r)
 
 
+# Representative, varied general-knowledge questions. There is no eval query
+# set deployed alongside the API (bench/ and eval/ never made it into git --
+# they're local-only), so this benchmark cycles through a fixed, honest set
+# rather than fabricating numbers or depending on a file that isn't there.
+_BENCHMARK_QUESTIONS = [
+    "What is the capital of India?",
+    "What was the impact of the Manhattan Project?",
+    "What is photosynthesis?",
+    "What is a Java IDE?",
+    "What is JavaScript?",
+    "What is the Bootstrap framework?",
+    "What causes climate change?",
+    "How does a computer processor work?",
+    "What is the water cycle?",
+    "What is machine learning?",
+    "What is the French Revolution?",
+    "How do vaccines work?",
+    "What is quantum computing?",
+    "What is the theory of relativity?",
+    "What is DNA?",
+    "How does the internet work?",
+    "What is inflation in economics?",
+    "What is a black hole?",
+    "How does democracy work?",
+    "What is renewable energy?",
+]
+
+
+@app.get("/benchmark")
+def benchmark(n: int = 100):
+    harness = STATE.get("harness")
+    if harness is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge base index is currently loading or unavailable.",
+        )
+    # Runs synchronously in-request -- bounded so a large n can't hang a
+    # worker. At ~2ms/query on this corpus, 300 queries is still well under
+    # a second.
+    n = max(1, min(n, 300))
+
+    fast_path_values: list[float] = []
+    stage_values: dict[str, list[float]] = {}
+
+    for i in range(n):
+        q = _BENCHMARK_QUESTIONS[i % len(_BENCHMARK_QUESTIONS)]
+        # This measures the fast path specifically. Generation is excluded
+        # by construction, regardless of ANSWER_MODE -- the question this
+        # number answers is "is retrieval under the 200ms budget", not
+        # "is the LLM fast" (a separate, much larger budget by nature of
+        # being a network call).
+        r = harness.answer(q, generate=False)
+        fast_path_values.append(r.fast_path_ms)
+        for stage, ms in r.timings_ms.items():
+            stage_values.setdefault(stage, []).append(ms)
+
+    within_budget = sum(1 for v in fast_path_values if v <= 200)
+
+    return {
+        "n_queries": n,
+        "within_budget": within_budget,
+        "fast_path_ms": _percentiles(fast_path_values),
+        "stages_ms": {k: _percentiles(v) for k, v in stage_values.items()},
+    }
+
+
 @app.post("/voice")
 async def voice(file: UploadFile = File(...), generate: bool | None = Form(None)):
     stt = STATE.get("stt")
